@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+    <body>
+        <h1>Tubesheet Generator</h1>
+        <h2>Calculation Inputs</h2>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js"></script>
+        <script>
+            $(document).on("change", ":input", function () {
+                if ($("#tubeOD_input").val()) {
+                    $("#pitchRatio_value").val(
+                        1 + $("#pitch_input").val() / $("#tubeOD_input").val()
+                    );
+                }
+            });
+        </script>
+        <script>
+            $(document).on("change", ":input", function () {
+                if ($("#pitchRatio_value").val()) {
+                    $("#pitchRatio_display").val(
+                        $("#pitchRatio_input").val()
+                    );
+                }
+            });
+        </script>
+        <table>
+            <form>
+                <tr>
+                    <td>
+                        <label for="minTubes_input">Minimum number of tubes required:</label>
+                    </td>
+                    <td>
+                        <input
+                            class="form-value"
+                            type="number"
+                            step="1"
+                            pattern="\d+"
+                            onchange="this.value = parseInt(this.value);"
+                            id="minTubes_input"
+                        />
+                    </td>
+                </tr>
+                <tr>
+                    <td>
+                        <label for="OTLtoShell_input">OTL to shell diametrical clearance:</label>
+                    </td>
+                    <td><input class="form-value" type="number" id="OTLtoShell_input" /></td>
+                </tr>
+                <tr>
+                    <td><label for="tubeOD_input">Tube OD:</label></td>
+                    <td><input class="form-value" type="number" id="tubeOD_input" /></td>
+                </tr>
+                <tr>
+                    <td><label for="pitch_input">Tube pitch:</label></td>
+                    <td><input class="form-value" type="number" id="pitch_input" /></td>
+                </tr>
+                <tr>
+                    <td><label for="pitchRatio_input">Pich ratio:</label></td>
+                    <td><input class="form-value" type="hidden" id="pitchRatio_value" /><input class="form-display" type="number" id="pitchRatio_display" /></td>
+                </tr>
+            </form>
+        </table>
+        <div id="log"></div>
+    </body>
+</html>
