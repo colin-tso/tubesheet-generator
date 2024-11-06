@@ -355,7 +355,7 @@ function radialFunc(
             x = 0;
             y = centreD / 2;
         } else {
-            let angle = angleIncrement * (i - 1) * -1 + Math.PI / 2;
+            let angle = angleIncrement * i * -1 + Math.PI / 2;
             x = (centreD / 2) * Math.cos(angle);
             y = (centreD / 2) * Math.sin(angle);
         }
