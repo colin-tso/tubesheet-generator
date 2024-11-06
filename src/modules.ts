@@ -92,6 +92,39 @@ export class TubeSheet {
         return this._numTubes;
     }
 
+    get OTL() {
+
+        if (this._minID !== null && typeof this._shellID !== "undefined") {
+            return Math.min(this._minID, this._shellID) - this._OTLClearance;
+        }
+
+        if (this._minID !== null) {
+            return this._minID - this._OTLClearance;
+        } else return null;
+    }
+
+    get svg() {
+        let shellIDForSVG = 0;
+        if (this._tubeField !== null && this.OTL !== null) {
+            if (
+                typeof this._shellID !== "undefined" &&
+                this._shellID !== 0 &&
+                !isNaN(this._shellID)
+            ) {
+                shellIDForSVG = this._shellID;
+            } else if (this._minID !== null && this._minID !== 0) {
+                shellIDForSVG = this._minID;
+            }
+            const svgElement = generateTubeSheetSVG(
+                this._tubeField,
+                this._tubeOD,
+                shellIDForSVG,
+                this.OTL
+            );
+            return svgElement;
+        } else return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    }
+
     private updateGeneratedProps() {
         this._minID = this.minIDFunc();
         this._numTubes = this.numTubesFunc();
