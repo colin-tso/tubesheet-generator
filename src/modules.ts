@@ -268,7 +268,7 @@ function generateTubeField(
         }
 
         // Recursively find optimal layout if offsetOption is set to AUTO.
-        // Otherwise, respect user input.
+        // Otherwise, respect offsetOption arg input.
 
         if (offsetOption === "AUTO") {
             if (
