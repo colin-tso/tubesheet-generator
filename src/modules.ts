@@ -11,6 +11,7 @@ export class TubeSheet {
     private _tubeField: TubeField | null;
     private _minTubes?: number;
     private _shellID?: number;
+private _OTL: number | null;
 
     public constructor(
         OTLClearance: number,
@@ -29,6 +30,7 @@ export class TubeSheet {
         this._minID = null;
         this._numTubes = null;
         this._tubeField = null;
+this._OTL = null;
         this.updateGeneratedProps();
     }
 
@@ -93,7 +95,17 @@ export class TubeSheet {
     }
 
     get OTL() {
+        return this._OTL;
+    }
 
+    private updateGeneratedProps() {
+        this._minID = this.minIDFunc();
+        this._numTubes = this.numTubesFunc();
+        this._tubeField = this.tubeFieldFunc();
+        this._OTL = this.OTLFunc();
+    }
+
+    private OTLFunc(): number | null {
         if (this._minID !== null && typeof this._shellID !== "undefined") {
             return Math.min(this._minID, this._shellID) - this._OTLClearance;
         }
