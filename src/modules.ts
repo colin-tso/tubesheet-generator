@@ -11,7 +11,7 @@ export class TubeSheet {
     private _tubeField: TubeField | null;
     private _minTubes?: number;
     private _shellID?: number;
-private _OTL: number | null;
+    private _OTL: number | null;
 
     public constructor(
         OTLClearance: number,
@@ -30,7 +30,7 @@ private _OTL: number | null;
         this._minID = null;
         this._numTubes = null;
         this._tubeField = null;
-this._OTL = null;
+        this._OTL = null;
         this.updateGeneratedProps();
     }
 
@@ -517,9 +517,9 @@ function findMinID(
                                 Math.sqrt(
                                     (tubeOD * pitchRatio) ** 2 + ((tubeOD * pitchRatio) / 2) ** 2
                                 ) *
-                                2 +
-                                OTLClearance +
-                                0.1
+                                    2 +
+                                    OTLClearance +
+                                    0.1
                             );
                         } else {
                             D_old = Math.max(
