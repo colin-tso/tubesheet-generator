@@ -98,6 +98,10 @@ this._OTL = null;
         return this._OTL;
     }
 
+    get svg() {
+        return generateTubeSheetSVG(this);
+    }
+
     private updateGeneratedProps() {
         this._minID = this.minIDFunc();
         this._numTubes = this.numTubesFunc();
@@ -113,34 +117,6 @@ this._OTL = null;
         if (this._minID !== null) {
             return this._minID - this._OTLClearance;
         } else return null;
-    }
-
-    get svg() {
-        let shellIDForSVG = 0;
-        if (this._tubeField !== null && this.OTL !== null) {
-            if (
-                typeof this._shellID !== "undefined" &&
-                this._shellID !== 0 &&
-                !isNaN(this._shellID)
-            ) {
-                shellIDForSVG = this._shellID;
-            } else if (this._minID !== null && this._minID !== 0) {
-                shellIDForSVG = this._minID;
-            }
-            const svgElement = generateTubeSheetSVG(
-                this._tubeField,
-                this._tubeOD,
-                shellIDForSVG,
-                this.OTL
-            );
-            return svgElement;
-        } else return document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    }
-
-    private updateGeneratedProps() {
-        this._minID = this.minIDFunc();
-        this._numTubes = this.numTubesFunc();
-        this._tubeField = this.tubeFieldFunc();
     }
 
     private tubeFieldFunc(): TubeField | null {
@@ -215,6 +191,12 @@ function roundUp(value: number, precision: number): number {
     return Math.ceil(value * multiplier) / multiplier;
 }
 
+function round(num: number, decimalPlaces = 0) {
+    var p = Math.pow(10, decimalPlaces);
+    var n = num * p * (1 + Number.EPSILON);
+    return Math.round(n) / p;
+}
+
 function generateTubeField(
     shellID: number,
     OTLClearance: number,
@@ -223,8 +205,6 @@ function generateTubeField(
     layout: number | string,
     offsetOption: string = "AUTO"
 ): TubeField | null {
-    // On Error GoTo errHandler
-
     try {
         // Input validation
         if (shellID <= 0 || tubeOD <= 0 || pitchRatio <= 1 || OTLClearance < 0) {
@@ -426,7 +406,6 @@ function tubeCount(
         layout,
         offsetOption
     );
-    // console.log(`Tube count: ${tubeField ? tubeField.length : 0} for offsetOption = ${offsetOption}`)
     return tubeField ? tubeField.length : 0;
 }
 
@@ -749,4 +728,213 @@ function findMinID(
             }
         }
     }
+}
+
+function generateSVGCircles<T extends { x: number; y: number }>(
+    circles: T[],
+    diameter: number,
+    svgStyles: string,
+    id?: Boolean
+): SVGSVGElement {
+    // Set id boolean if undefined
+    if (typeof id === "undefined") {
+        id = false;
+    }
+    // Create an SVG element
+    const svgNamespace = "http://www.w3.org/2000/svg";
+
+    // Create variables to define bounding box based on coordinates and diameter
+    let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+
+    const svg = document.createElementNS(svgNamespace, "svg");
+
+    // Loop through each tube to create circles
+    circles.forEach((c, i) => {
+        const circle = document.createElementNS(svgNamespace, "circle");
+        circle.setAttribute("cx", c.x.toString());
+        circle.setAttribute("cy", c.y.toString());
+        circle.setAttribute("r", (diameter / 2).toString());
+        if (id) {
+            circle.setAttribute("id", (i + 1).toString());
+        }
+
+        // Apply the SVG path styles
+        const styles = svgStyles.split(";").reduce((acc, style) => {
+            const [key, value] = style.split(":");
+            if (key && value) acc[key.trim()] = value.trim();
+            return acc;
+        }, {} as { [key: string]: string });
+
+        Object.entries(styles).forEach(([key, value]) => {
+            circle.setAttribute(key, value);
+        });
+
+        // Calculate bounding box based on coordinates and diameter
+        minX = Math.min(minX, c.x - diameter / 2);
+        minY = Math.min(minY, c.y - diameter / 2);
+        maxX = Math.max(maxX, c.x + diameter / 2);
+        maxY = Math.max(maxY, c.y + diameter / 2);
+
+        // Append each circle to the SVG
+        svg.appendChild(circle);
+    });
+
+    const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+
+    // Set SVG attributes
+    svg.setAttribute("xmlns", svgNamespace);
+    svg.setAttribute("height", "100dvh");
+    svg.setAttribute("viewBox", viewBox);
+
+    return svg;
+}
+
+function generateSVGCenteredCross(diameter: number, svgStyles: string): SVGSVGElement {
+    // Create an SVG element
+    const svgNamespace = "http://www.w3.org/2000/svg";
+
+    // Create variables to define bounding box based on coordinates and diameter
+    let minX = (-diameter / 2) * 1.1,
+        minY = (-diameter / 2) * 1.1,
+        maxX = (diameter / 2) * 1.1,
+        maxY = (diameter / 2) * 1.1;
+
+    // Interpret SVG styles
+    const styles = svgStyles.split(";").reduce((acc, style) => {
+        const [key, value] = style.split(":");
+        if (key && value) acc[key.trim()] = value.trim();
+        return acc;
+    }, {} as { [key: string]: string });
+
+    const svg = document.createElementNS(svgNamespace, "svg");
+
+    // Horizontal line
+    const horzLine = document.createElementNS(svgNamespace, "line");
+    horzLine.setAttribute("x1", minX.toString());
+    horzLine.setAttribute("y1", "0");
+    horzLine.setAttribute("x2", maxX.toString());
+    horzLine.setAttribute("y2", "0");
+
+    Object.entries(styles).forEach(([key, value]) => {
+        horzLine.setAttribute(key, value);
+    });
+    svg.appendChild(horzLine);
+
+    // Horizontal line
+    const vertLine = document.createElementNS(svgNamespace, "line");
+    vertLine.setAttribute("x1", "0");
+    vertLine.setAttribute("y1", minY.toString());
+    vertLine.setAttribute("x2", "0");
+    vertLine.setAttribute("y2", maxY.toString());
+
+    Object.entries(styles).forEach(([key, value]) => {
+        vertLine.setAttribute(key, value);
+    });
+    svg.appendChild(vertLine);
+
+    const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+
+    // Set SVG attributes
+    svg.setAttribute("xmlns", svgNamespace);
+    svg.setAttribute("height", "100dvh");
+    svg.setAttribute("viewBox", viewBox);
+
+    return svg;
+}
+
+function mergeSVGs(svgs: SVGSVGElement[]): SVGSVGElement {
+    const svgNamespace = "http://www.w3.org/2000/svg";
+
+    // Create a new SVG element to serve as the container
+    const mergedSVG = document.createElementNS(svgNamespace, "svg");
+    mergedSVG.setAttribute("xmlns", svgNamespace);
+    mergedSVG.setAttribute("height", "100dvh");
+    mergedSVG.setAttribute("class", "tubesheet-svg");
+    mergedSVG.setAttribute("margin", "0");
+    mergedSVG.setAttribute("padding", "0");
+
+    // Calculate the bounding box to set the viewBox of the merged SVG
+    let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+
+    svgs.forEach((svg) => {
+        // Get the child circles from each SVG and append them to the merged SVG
+        Array.from(svg.childNodes).forEach((child) => {
+            if (child instanceof SVGElement) {
+                mergedSVG.appendChild(child.cloneNode(true));
+            }
+        });
+
+        // Calculate the bounding box for the current SVG to adjust the viewBox
+        const viewBox = svg.getAttribute("viewBox");
+        if (viewBox) {
+            const [x, y, width, height] = viewBox.split(" ").map(Number);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + width);
+            maxY = Math.max(maxY, y + height);
+        }
+    });
+
+    // Set the viewBox of the merged SVG to encompass all contained SVGs
+    mergedSVG.setAttribute(
+        "viewBox",
+        `${minX * 1.1} ${minY * 1.1} ${(maxX - minX) * 1.1} ${(maxY - minY) * 1.1}`
+    );
+
+    return mergedSVG;
+}
+
+function generateTubeSheetSVG(ts: TubeSheet) {
+    if (!ts.tubeField || !ts.OTL) {
+        return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    }
+
+    let shellIDForSVG = 0;
+    if (ts.tubeField !== null && ts.OTL !== null) {
+        if (typeof ts.shellID !== "undefined" && ts.shellID !== 0 && !isNaN(ts.shellID)) {
+            shellIDForSVG = ts.shellID;
+        } else if (ts.minID !== null && ts.minID !== 0) {
+            shellIDForSVG = ts.minID;
+        }
+    }
+
+    const tubeFieldSVG = generateSVGCircles(
+        ts.tubeField,
+        ts.tubeOD,
+        "stroke:black; fill:none; stroke-width:1; vector-effect:non-scaling-stroke;",
+        true
+    );
+    const shellSVG = generateSVGCircles(
+        [{ x: 0, y: 0 }],
+        shellIDForSVG,
+        "stroke:black; fill:none; stroke-width:2; vector-effect:non-scaling-stroke;"
+    );
+    const OTLSVG = generateSVGCircles(
+        [{ x: 0, y: 0 }],
+        ts.OTL,
+        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;"
+    );
+    const crossHairs = generateSVGCenteredCross(
+        shellIDForSVG,
+        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;"
+    );
+    const mergedSVG = mergeSVGs([shellSVG, OTLSVG, tubeFieldSVG, crossHairs]);
+    mergedSVG.setAttribute("title", "Tubesheet Layout Drawing");
+    mergedSVG.setAttribute(
+        "desc",
+        `Shell ID: ${round(shellIDForSVG, 2)} mm; OTL: ${round(ts.OTL, 2)} mm; Tube OD: ${
+            ts.tubeOD
+        } mm; Pitch: ${round((ts.pitchRatio - 1) * ts.tubeOD, 2)}; Pitch Ratio: ${round(
+            ts.pitchRatio,
+            2
+        )}; Pitch Layout: ${ts.layout}; Number of Tubes: ${ts.numTubes};`
+    );
+    mergedSVG.setAttribute("role", "img");
+    return mergedSVG;
 }
