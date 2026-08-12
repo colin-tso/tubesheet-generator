@@ -143,19 +143,10 @@ describe("TubeSheet — regression: findMinID hang on sparse tube fields", () =>
 });
 
 describe("TubeSheet — exact tube field regression (backported from legacy jest suite)", () => {
-    // These check every tube's exact (x, y), which is a stronger regression
-    // guard than the count/minID/OTL/symmetry checks above: it would also
-    // catch a change that preserves count and symmetry but subtly shuffles
-    // where individual tubes land.
-    //
-    // Radial needed its own fixture rather than a straight port. The legacy
-    // fixture contained two near-identical points at (~0, 277.28) — a
-    // boundary duplicate from the old seam handling — while the current
-    // implementation correctly emits a single point there plus the
-    // wrap-around point the old fixture was missing. Same ring, same radius,
-    // one fewer duplicate. The values below were captured from the current
-    // implementation and should be treated as the source of truth going
-    // forward.
+    // These check every tube's exact (x, y), which would also catch a change
+    // that preserves count and symmetry but subtly shuffles where individual
+    // tubes land.
+
     const closeTo = (actual: number, expected: number, precision = 6) =>
         expect(Math.abs(actual - expected)).toBeLessThan(Math.pow(10, -precision) / 2);
 
