@@ -1,11 +1,30 @@
-type Tube = { x: number; y: number };
-type TubeField = Array<Tube>;
+import memoize from "lodash.memoize";
+import { LRUCache } from "./utils/LRUCache";
+
+export interface Tube {
+    x: number;
+    y: number;
+}
+export type TubeField = Array<Tube>;
+export const TUBE_SHEET_LAYOUTS = [30, 45, 60, 90, "radial"] as const;
+export type TubeSheetLayout = (typeof TUBE_SHEET_LAYOUTS)[number];
+
+export interface ITubeSheetData {
+    tubeField: TubeField | null;
+    OTL: number | null;
+    shellID?: number;
+    minID: number | null;
+    tubeOD: number;
+    pitchRatio: number;
+    layout: TubeSheetLayout;
+    numTubes: number | null;
+}
 
 export class TubeSheet {
     private _OTLClearance: number;
     private _tubeOD: number;
     private _pitchRatio: number;
-    private _layout: number | string;
+    private _layout: TubeSheetLayout;
     private _minID: number | null;
     private _numTubes: number | null;
     private _tubeField: TubeField | null;
@@ -13,13 +32,30 @@ export class TubeSheet {
     private _shellID?: number;
     private _OTL: number | null;
 
+    /**
+     * Construct a new TubeSheet object.
+     *
+     * @param {number} OTLClearance     OTL = Outer Tube Limit. The minimum
+     *                                  diametrical clearance from the tube
+     *                                  outer diameter to the shell ID.
+     * @param {number} tubeOD           The tube outer diameter.
+     * @param {number} pitchRatio       The tube pitch ratio.
+     * @param {TubeSheetLayout} layout  The tube layout angle.
+     * @param {number} [minTubes]       The minimum number of tubes required. If
+     *                                  specified, the shell ID will be
+     *                                  calculated to achieve this number of
+     *                                  tubes.
+     * @param {number} [shellID]        The shell ID. If specified, the number
+     *                                  of tubes will be the maximum allowable
+     *                                  for this shell ID.
+     */
     public constructor(
         OTLClearance: number,
         tubeOD: number,
         pitchRatio: number,
-        layout: number | string,
+        layout: TubeSheetLayout,
         minTubes?: number,
-        shellID?: number
+        shellID?: number,
     ) {
         this._minTubes = minTubes;
         this._shellID = shellID;
@@ -58,7 +94,7 @@ export class TubeSheet {
         return this._pitchRatio;
     }
 
-    set layout(x: number | string) {
+    set layout(x: typeof this._layout) {
         this._layout = x;
         this.updateGeneratedProps();
     }
@@ -70,16 +106,16 @@ export class TubeSheet {
         this._minTubes = x;
         this.updateGeneratedProps();
     }
-    get minTubes() {
-        return this._minTubes as number;
+    get minTubes(): number | undefined {
+        return this._minTubes;
     }
 
     set shellID(x: number) {
         this._shellID = x;
         this.updateGeneratedProps();
     }
-    get shellID() {
-        return this._shellID as number;
+    get shellID(): number | undefined {
+        return this._shellID;
     }
 
     get tubeField() {
@@ -103,276 +139,302 @@ export class TubeSheet {
     }
 
     private updateGeneratedProps() {
-        this._minID = this.minIDFunc();
-        this._numTubes = this.numTubesFunc();
-        this._tubeField = this.tubeFieldFunc();
-        this._OTL = this.OTLFunc();
+        const props = this.computeGeneratedProps();
+        this._minID = props.minID;
+        this._numTubes = props.numTubes;
+        this._tubeField = props.tubeField;
+        this._OTL = props.OTL;
     }
 
-    private OTLFunc(): number | null {
-        if (this._minID !== null && typeof this._shellID !== "undefined") {
-            return Math.min(this._minID, this._shellID) - this._OTLClearance;
-        }
+    private computeGeneratedProps(): {
+        minID: number | null;
+        numTubes: number;
+        tubeField: TubeField | null;
+        OTL: number | null;
+    } {
+        let minID: number | null = null;
+        let effectiveShellID: number | null = null;
 
-        if (this._minID !== null) {
-            return this._minID - this._OTLClearance;
-        } else return null;
-    }
-
-    private tubeFieldFunc(): TubeField | null {
         if (this._shellID) {
-            return generateTubeField(
-                this._shellID,
-                this._OTLClearance,
-                this._tubeOD,
-                this._pitchRatio,
-                this._layout
-            );
+            effectiveShellID = this._shellID;
         } else if (this._minTubes) {
-            return generateTubeField(
-                this.minIDFunc() as number,
-                this._OTLClearance,
-                this._tubeOD,
-                this._pitchRatio,
-                this._layout
-            );
-        } else {
-            return null;
-        }
-    }
-
-    private minIDFunc(): number | null {
-        if (this._minTubes) {
-            return findMinID(
+            minID = findMinID(
                 this._minTubes,
                 this._OTLClearance,
                 this._tubeOD,
                 this._pitchRatio,
-                this._layout
+                this._layout,
             );
-        } else if (this._shellID) {
-            return findMinID(
-                this.numTubesFunc(),
+            effectiveShellID = minID;
+        }
+
+        if (effectiveShellID === null) {
+            return { minID, numTubes: 0, tubeField: null, OTL: null };
+        }
+
+        const tubeField = generateTubeField(
+            effectiveShellID,
+            this._OTLClearance,
+            this._tubeOD,
+            this._pitchRatio,
+            this._layout,
+        );
+        const numTubes = tubeField ? tubeField.length : 0;
+
+        if (this._shellID) {
+            minID = findMinID(
+                numTubes,
                 this._OTLClearance,
                 this._tubeOD,
                 this._pitchRatio,
-                this._layout
+                this._layout,
             );
-        } else {
+        }
+
+        const OTL = tubeField ? OTLFromTubeField(tubeField, this._tubeOD) : null;
+
+        return { minID, numTubes, tubeField, OTL };
+    }
+}
+
+const roundUp = (value: number, decimalPlaces: number): number => {
+    const multiplier = Math.pow(10, decimalPlaces);
+    return Math.ceil(value * multiplier) / multiplier;
+};
+
+const round = (num: number, decimalPlaces = 0) => {
+    const p = Math.pow(10, decimalPlaces);
+    const n = num * p * (1 + Number.EPSILON);
+    return Math.round(n) / p;
+};
+
+/**
+ * Creates a memo key for a given set of arguments based on a set of defaults.
+ *
+ * @param {...number | string | boolean | undefined} defaults
+ * The default values for the memo key.
+ * @returns {(...args: Array<number | string | boolean | undefined>) => string}
+ * A memo key generator function.
+ */
+const createMemoKey = (...defaults: Array<number | string | boolean | undefined>) => {
+    return (...args: Array<number | string | boolean | undefined>): string => {
+        const normalised = defaults.map((def, i) => (args[i] === undefined ? def : args[i]));
+        return normalised.map((v) => `${typeof v}:${String(v)}`).join("|");
+    };
+};
+const MEMO_CACHE_SIZE = 1000;
+const LAYOUT_FN_MEMO_DEFAULTS: Array<number | string | boolean | undefined> = [
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "AUTO",
+];
+
+/**
+ * Generates a tube field based on the provided parameters.
+ *
+ * @param {number} shellID                          The shell ID.
+ * @param {number} OTLClearance                     The OTL clearance.
+ * @param {number} tubeOD                           The tube OD.
+ * @param {number} pitchRatio                       The pitch ratio.
+ * @param {TubeSheetLayout} layout                  The tube sheet layout.
+ * @param {boolean | "AUTO"} [offsetOption="AUTO"]  The offset option.
+ * @returns {TubeField | null}                      The generated tube field, or
+ *                                                  null if an error occurred.
+ */
+const generateTubeField = memoize(
+    (
+        shellID: number,
+        OTLClearance: number,
+        tubeOD: number,
+        pitchRatio: number,
+        layout: TubeSheetLayout,
+        offsetOption: boolean | "AUTO" = "AUTO",
+    ): TubeField | null => {
+        try {
+            if (shellID <= 0) {
+                throw new Error("Shell ID must be greater than 0");
+            }
+            if (tubeOD <= 0) {
+                throw new Error("Tube OD must be greater than 0");
+            }
+            if (pitchRatio < 1) {
+                throw new Error("Pitch ratio must be 1 or greater");
+            }
+            if (OTLClearance < 0) {
+                throw new Error("OTL clearance must be 0 or greater");
+            }
+            if (tubeOD > shellID - OTLClearance) {
+                throw new Error("Tube OD exceeds max allowable OTL");
+            }
+
+            const DECIMAL_PLACES = 8;
+            shellID = roundUp(shellID, DECIMAL_PLACES);
+
+            const MAX_ITERATIONS = 999999;
+
+            if (layout === "radial") {
+                return radialTubeField(shellID, OTLClearance, tubeOD, pitchRatio);
+            }
+
+            const pitch = tubeOD * pitchRatio;
+            const maxOTL = shellID - OTLClearance;
+
+            const { dx, dy, C } = getLayoutConstants(pitch, layout);
+
+            // Recursively find optimal layout if offsetOption is set to AUTO.
+            // Otherwise, respect offsetOption arg input.
+            let idealOffsetOption: boolean;
+
+            if (offsetOption !== "AUTO") {
+                idealOffsetOption = offsetOption;
+            } else {
+                idealOffsetOption =
+                    tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, true) >
+                    tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, false);
+                return generateTubeField(
+                    shellID,
+                    OTLClearance,
+                    tubeOD,
+                    pitchRatio,
+                    layout,
+                    idealOffsetOption,
+                );
+            }
+
+            const offset = idealOffsetOption ? dx / 2 : 0;
+            let i = 0,
+                j = 0,
+                x = 0,
+                y = 0;
+            const quarterTubeField: TubeField = [];
+            const maxCentreDist = (maxOTL - tubeOD) / 2;
+            const maxCentreDistSq = maxCentreDist * maxCentreDist;
+
+            while (Math.abs(y) <= maxOTL && j < MAX_ITERATIONS) {
+                y = j * dy;
+                const cMult = j & 1 ? 0 : 1;
+                while (Math.abs(x) <= maxOTL && i < MAX_ITERATIONS) {
+                    x = C * cMult + i * dx - offset;
+                    i++;
+                    if (x * x + y * y <= maxCentreDistSq) {
+                        // same as Math.sqrt(x ** 2 + y ** 2) * 2 + tubeOD <=
+                        // maxOTL
+                        quarterTubeField.push({ x: x, y: y });
+                    } else {
+                        break;
+                    }
+                }
+                i = 0;
+                j++;
+            }
+
+            const applySymmetry = (quarterTubeField: TubeField): TubeField => {
+                const flipHorz: number[][] = [
+                    [-1, 0],
+                    [0, 1],
+                ];
+
+                const flipVert: number[][] = [
+                    [1, 0],
+                    [0, -1],
+                ];
+
+                const applyMatrix = (point: Tube, matrix: number[][]): Tube => {
+                    const x = point.x;
+                    const y = point.y;
+
+                    return {
+                        x: x * matrix[0][0] + y * matrix[0][1],
+                        y: x * matrix[1][0] + y * matrix[1][1],
+                    };
+                };
+
+                const COORD_DECIMALS = 8;
+                const normalize = (n: number): number => {
+                    const rounded = round(n, COORD_DECIMALS);
+                    return rounded === 0 ? 0 : rounded;
+                };
+
+                const mergeUniqueCoordinates = (...arrays: TubeField[]): TubeField => {
+                    const seen = new Map<string, Tube>();
+                    for (const arr of arrays) {
+                        for (const point of arr) {
+                            const x = normalize(point.x);
+                            const y = normalize(point.y);
+                            const key = `${x}|${y}`;
+                            if (!seen.has(key)) {
+                                seen.set(key, { x, y });
+                            }
+                        }
+                    }
+                    return Array.from(seen.values());
+                };
+
+                const flippedHorz: TubeField = quarterTubeField.map((point) =>
+                    applyMatrix(point, flipHorz),
+                );
+                const flippedVert: TubeField = mergeUniqueCoordinates(
+                    quarterTubeField,
+                    flippedHorz,
+                ).map((point) => applyMatrix(point, flipVert));
+
+                const sortTubePositions = (tubeField: TubeField): TubeField => {
+                    return tubeField.sort((a, b) => {
+                        if (a.y === b.y) {
+                            return a.x - b.x; // Sort by x if y is the same
+                        }
+                        return a.y - b.y; // Otherwise, sort by y
+                    });
+                };
+
+                // Merge and deduplicate tube positions
+                const mergedFields = mergeUniqueCoordinates(
+                    quarterTubeField,
+                    flippedHorz,
+                    flippedVert,
+                );
+
+                // Sort the final tube positions
+                return sortTubePositions(mergedFields);
+            };
+
+            const tubeField = applySymmetry(quarterTubeField);
+
+            return tubeField;
+        } catch (error) {
+            console.error((error as Error).message);
             return null;
         }
-    }
+    },
+    createMemoKey(...LAYOUT_FN_MEMO_DEFAULTS),
+);
+generateTubeField.cache = new LRUCache(
+    MEMO_CACHE_SIZE,
+) as unknown as typeof generateTubeField.cache;
 
-    private numTubesFunc(): number {
-        if (this._shellID) {
-            return tubeCount(
-                this._shellID,
-                this._OTLClearance,
-                this._tubeOD,
-                this._pitchRatio,
-                this._layout
-            );
-        } else if (this._minTubes) {
-            return tubeCount(
-                this.minIDFunc() as number,
-                this._OTLClearance,
-                this._tubeOD,
-                this._pitchRatio,
-                this._layout
-            );
-        } else {
-            return 0;
-        }
-    }
-}
-
-function roundUp(value: number, precision: number): number {
-    const multiplier = Math.pow(10, precision);
-    return Math.ceil(value * multiplier) / multiplier;
-}
-
-function round(num: number, decimalPlaces = 0) {
-    var p = Math.pow(10, decimalPlaces);
-    var n = num * p * (1 + Number.EPSILON);
-    return Math.round(n) / p;
-}
-
-function generateTubeField(
+/**
+ * Generates a radial tube field.
+ *
+ * @param {number} r1      The radius of the first point.
+ * @param {number} r2      The radius of the second point.
+ * @param {number} theta   The angle between the two points in radians.
+ * @returns {number}       The distance between the two points.
+ */
+const radialTubeField = (
     shellID: number,
     OTLClearance: number,
     tubeOD: number,
     pitchRatio: number,
-    layout: number | string,
-    offsetOption: string = "AUTO"
-): TubeField | null {
-    try {
-        // Input validation
-        if (shellID <= 0 || tubeOD <= 0 || pitchRatio <= 1 || OTLClearance < 0) {
-            throw new Error("Invalid input parameters");
-        }
-
-        if (tubeOD >= shellID - OTLClearance) {
-            throw new Error("Tube OD exceeds shell ID");
-        }
-
-        shellID = roundUp(shellID, 8);
-
-        const MAX_ITERATIONS = 999999;
-        let Pt: number;
-        let dx: number;
-        let dy: number;
-        let C: number;
-        let MaxOTL: number;
-        let tempTubeField: TubeField = [];
-        let idealOffsetOption: boolean;
-
-        // Calculate constants
-        Pt = tubeOD * pitchRatio;
-        MaxOTL = shellID - OTLClearance;
-
-        // Calculate dx, dy and per-row offset based on selected layout
-        switch (typeof layout === "string" ? layout.toLowerCase() : layout) {
-            case 30:
-                dx = Pt;
-                dy = (Pt * Math.sqrt(3)) / 2; //Pt * sin(60°) = Pt * Math.sqrt(3) / 2
-                C = dx * 0.5;
-                break;
-            case 60:
-                dx = Pt * Math.sqrt(3); //Pt * sin(60°) * 2
-                dy = Pt / 2;
-                C = dx * 0.5;
-                break;
-            case 90:
-                dx = Pt;
-                dy = Pt;
-                C = 0;
-                break;
-            case 45:
-                dx = Pt * Math.sqrt(2); //Pt * 2 / cos(45°)
-                dy = dx / 2;
-                C = dx * 0.5;
-                break;
-            case "radial":
-                return radialFunc(shellID, OTLClearance, tubeOD, pitchRatio);
-
-            default: //catch invalid input as error
-                throw new Error("Invalid layout option");
-        }
-
-        // Recursively find optimal layout if offsetOption is set to AUTO.
-        // Otherwise, respect offsetOption arg input.
-
-        if (offsetOption === "AUTO") {
-            if (
-                tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, "True") >
-                tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, "False")
-            ) {
-                idealOffsetOption = true;
-            } else {
-                idealOffsetOption = false;
-            }
-        } else if (offsetOption === "True") {
-            idealOffsetOption = true;
-        } else {
-            idealOffsetOption = false;
-        }
-
-        let offset = idealOffsetOption ? dx / 2 : 0;
-        let i = 0,
-            j = 0,
-            x = 0,
-            y = 0;
-        let goNextRow: Boolean = false;
-
-        while (Math.abs(y) <= MaxOTL && j < MAX_ITERATIONS) {
-            y = j * dy;
-            while (Math.abs(x) <= MaxOTL && i < MAX_ITERATIONS && !goNextRow) {
-                let cMult = j % 2 === 0 ? 0 : 1;
-                x = C * cMult + i * dx - offset;
-                if (Math.sqrt(x ** 2 + y ** 2) * 2 + tubeOD <= MaxOTL) {
-                    tempTubeField.push({ x: x, y: y });
-                } else {
-                    goNextRow = true;
-                }
-                i++;
-            }
-            i = 0;
-            j++;
-            goNextRow = false;
-        }
-
-        function applySymmetry(tubeField: TubeField): TubeField {
-            const flipHorz: number[][] = [
-                [-1, 0],
-                [0, 1],
-            ];
-
-            const flipVert: number[][] = [
-                [1, 0],
-                [0, -1],
-            ];
-
-            function applyMatrix(point: Tube, matrix: number[][]): Tube {
-                const x = point.x;
-                const y = point.y;
-
-                return {
-                    x: x * matrix[0][0] + y * matrix[0][1],
-                    y: x * matrix[1][0] + y * matrix[1][1],
-                };
-            }
-
-            const flippedHorz = tubeField.map((point) => applyMatrix(point, flipHorz));
-            const flippedVert = mergeUniqueCoordinates(tubeField, flippedHorz).map((point) =>
-                applyMatrix(point, flipVert)
-            );
-
-            function mergeUniqueCoordinates(...arrays: TubeField[]): TubeField {
-                const merged = arrays.flat(1);
-
-                // Create a Set to hold unique tube positions based on JSON stringified coordinates
-                const uniqueSet = new Set(merged.map((item) => JSON.stringify(item)));
-
-                return Array.from(uniqueSet).map((item) => JSON.parse(item));
-            }
-
-            function sortTubePositions(tubeField: TubeField): TubeField {
-                return tubeField.sort((a, b) => {
-                    if (a.y === b.y) {
-                        return a.x - b.x; // Sort by x if y is the same
-                    }
-                    return a.y - b.y; // Otherwise, sort by y
-                });
-            }
-
-            // Merge and deduplicate tube positions
-            const mergedFields = mergeUniqueCoordinates(tubeField, flippedHorz, flippedVert);
-
-            // Sort the final tube positions
-            return sortTubePositions(mergedFields);
-        }
-
-        tempTubeField = applySymmetry(tempTubeField);
-
-        return tempTubeField;
-    } catch (error) {
-        console.error((error as Error).message);
-        return null;
-    }
-}
-
-function radialFunc(
-    shellID: number,
-    OTLClearance: number,
-    tubeOD: number,
-    pitchRatio: number
-): TubeField {
-    let Pt = tubeOD * pitchRatio;
-    let MaxOTL = shellID - OTLClearance;
-    let numTubes = Math.floor(Math.PI / Math.asin(Pt / (MaxOTL - tubeOD)));
-    let angleIncrement = (2 * Math.PI) / numTubes;
-    let centreD = Pt / Math.sin(Math.PI / numTubes);
-    let tempTubeField: TubeField = [];
+): TubeField => {
+    const pitch = tubeOD * pitchRatio;
+    const MaxOTL = shellID - OTLClearance;
+    const numTubes = Math.floor(Math.PI / Math.asin(pitch / (MaxOTL - tubeOD)));
+    const angleIncrement = (2 * Math.PI) / numTubes;
+    const centreD = pitch / Math.sin(Math.PI / numTubes);
+    const tubeField: TubeField = [];
 
     for (let i = 0; i < numTubes; i++) {
         let x: number, y: number;
@@ -380,151 +442,345 @@ function radialFunc(
             x = 0;
             y = centreD / 2;
         } else {
-            let angle = angleIncrement * i * -1 + Math.PI / 2;
+            const angle = angleIncrement * i * -1 + Math.PI / 2;
             x = (centreD / 2) * Math.cos(angle);
             y = (centreD / 2) * Math.sin(angle);
         }
-        tempTubeField.push({ x: x, y: y });
+        tubeField.push({ x: x, y: y });
     }
 
-    return tempTubeField;
-}
+    return tubeField;
+};
 
-function tubeCount(
+/**
+ * Returns the layout constants based on the pitch and layout.
+ *
+ * @param {number} pitch             The pitch value.
+ * @param {TubeSheetLayout} layout   The layout value.
+ * @returns {{ dx: number; dy: number; C: number }}  The layout constants.
+ */
+const getLayoutConstants = (pitch: number, layout: TubeSheetLayout) => {
+    const sin60 = Math.sqrt(3) / 2;
+    const cos45 = 1 / Math.sqrt(2);
+
+    const layoutConstants: {
+        [key in TubeSheetLayout]: { dx: number; dy: number; C: number };
+    } = {
+        30: {
+            dx: pitch,
+            dy: pitch * sin60,
+            C: pitch / 2,
+        },
+        60: {
+            dx: pitch * sin60 * 2,
+            dy: pitch / 2,
+            C: (pitch * sin60 * 2) / 2,
+        },
+        90: { dx: pitch, dy: pitch, C: 0 },
+        45: {
+            dx: pitch / cos45,
+            dy: pitch / cos45 / 2,
+            C: pitch / cos45 / 2,
+        },
+        radial: { dx: NaN, dy: NaN, C: NaN },
+    };
+    return layoutConstants[layout as keyof typeof layoutConstants];
+};
+
+/**
+ * Calculates the number of tubes in a tube sheet based on the shell ID, OTL
+ * clearance, tube outer diameter, pitch ratio, layout, and offset option.
+ *
+ * @param {number} shellID                          The shell ID of the tube
+ *                                                  sheet.
+ * @param {number} OTLClearance                     The minimum diametrical
+ *                                                  clearance from the tube
+ *                                                  outer diameter to the shell
+ *                                                  ID.
+ * @param {number} tubeOD                           The tube outer diameter.
+ * @param {number} pitchRatio                       The tube pitch ratio.
+ * @param {TubeSheetLayout} layout                  The layout of the tube
+ * sheet.
+ * @param {boolean | "AUTO"} [offsetOption="AUTO"]  The offset option for the
+ *                                                  tube field generation.
+ *                                                  Defaults to "AUTO".
+ * @returns {number}                                The number of tubes in the
+ * tube sheet.
+ */
+const tubeCount = (
     shellID: number,
     OTLClearance: number,
     tubeOD: number,
     pitchRatio: number,
-    layout: number | string,
-    offsetOption: string = "AUTO"
-): number {
-    let tubeField = generateTubeField(
+    layout: TubeSheetLayout,
+    offsetOption: boolean | "AUTO" = "AUTO",
+): number => {
+    const tubeField = generateTubeField(
         shellID,
         OTLClearance,
         tubeOD,
         pitchRatio,
         layout,
-        offsetOption
+        offsetOption,
     );
     return tubeField ? tubeField.length : 0;
-}
+};
 
-function tubeFieldOTL(
+/**
+ * Calculates the OTL (Outer Tube Limit) for a given tube field.
+ *
+ * @param {TubeField} tubeField            The tube field object.
+ * @param {TubeSheetLayout} layout         The tube sheet layout.
+ * @param {number} [offsetOption=0]        The offset option.
+ * @returns {number | null | undefined}    The calculated OTL value, or null if
+ *                                         an error occurred.
+ * @throws {Error}                         If the tube OD is greater than the
+ *                                         max allowable OTL.
+ * @throws {Error}                         If the tube field array is invalid.
+ */
+const OTLFromTubeField = (tubeField: TubeField, tubeOD: number): number | null => {
+    if (!tubeField || tubeField.length === 0) {
+        return null;
+    }
+    const DECIMAL_PLACES = 11;
+    let maxDistSq = 0;
+    let found = false;
+    tubeField.forEach((tube) => {
+        if ("x" in tube && "y" in tube) {
+            found = true;
+            const distSq = tube.x * tube.x + tube.y * tube.y;
+            if (distSq > maxDistSq) {
+                maxDistSq = distSq;
+            }
+        }
+    });
+    if (!found) {
+        return null;
+    }
+    const D = Math.sqrt(maxDistSq) * 2 + tubeOD;
+    return roundUp(D, DECIMAL_PLACES);
+};
+
+/**
+ * Calculates the OTL (Outer Tube Limit) based on tube field parameters.
+ *
+ * @param {number} shellID                          The shell ID.
+ * @param {number} OTLClearance                     The OTL clearance.
+ * @param {number} tubeOD                           The tube OD.
+ * @param {number} pitchRatio                       The pitch ratio.
+ * @param {TubeSheetLayout} layout                  The tube sheet layout.
+ * @param {boolean | "AUTO"} [offsetOption="AUTO"]  The offset option.
+ * @returns {number | null | undefined}             The calculated OTL value, or
+ *                                                  null if an error occurred.
+ * @throws {Error}                                  If the tube OD is greater
+ *                                                  than the max allowable OTL.
+ * @throws {Error}                                  If the tube field array is
+ *                                                  invalid.
+ */
+const tubeFieldOTL = (
     shellID: number,
     OTLClearance: number,
     tubeOD: number,
     pitchRatio: number,
-    layout: number | string,
-    offsetOption: string = "AUTO"
-): number | null | undefined {
+    layout: TubeSheetLayout,
+    offsetOption: boolean | "AUTO" = "AUTO",
+): number | null | undefined => {
     try {
-        // Input validation
-        if (tubeOD >= shellID - OTLClearance) {
-            throw new Error("Invalid input");
+        if (tubeOD > shellID - OTLClearance) {
+            throw new Error("Tube OD cannot be greater than max allowable OTL.");
         }
-
         const tubeField = generateTubeField(
             shellID,
             OTLClearance,
             tubeOD,
             pitchRatio,
             layout,
-            offsetOption
+            offsetOption,
         );
-        if (tubeField) {
-            let D = 0;
-            let D_new = 0;
-            // let x: number, y: number
-            tubeField.forEach((tube) => {
-                if ("x" in tube && "y" in tube) {
-                    let x = tube.x;
-                    let y = tube.y;
-                    // Calculate the new diameter
-                    D_new = Math.sqrt(x ** 2 + y ** 2) * 2 + tubeOD;
-                    if (D_new > D) {
-                        D = D_new;
-                    }
-                }
-            });
-            // Round up and return the OTL
-            if (D === 0) {
-                throw new Error("Invalid tube field array");
+        if (tubeField && tubeField.length > 0) {
+            const OTL = OTLFromTubeField(tubeField, tubeOD);
+            if (OTL === null) {
+                throw new Error("Invalid tube field array.");
             }
-            return roundUp(D, 11);
+            return OTL;
         }
-    } catch (error) {
-        console.log((error as Error).message);
+        return null;
+    } catch {
         return null;
     }
-}
+};
 
-function findMinID(
-    minTubes: number,
-    OTLClearance: number,
-    tubeOD: number,
-    pitchRatio: number,
-    layout: number | string,
-    offsetOption: string = "AUTO"
-): number {
-    const maxRetries: number = 5;
-    let retries: number = 0;
+/**
+ * Finds the minimum shell ID for a given set of parameters.
+ *
+ * @param {number} minTubes                         The minimum number of tubes.
+ * @param {number} OTLClearance                     The outer tube length
+ *                                                  clearance.
+ * @param {number} tubeOD                           The outer diameter of the
+ *                                                  tube.
+ * @param {number} pitchRatio                       The pitch ratio.
+ * @param {string | TubeSheetLayout} layout         The layout type. Can be a
+ *                                                  string or a TubeSheetLayout
+ *                                                  object.
+ * @param {boolean | "AUTO"} [offsetOption="AUTO"]  The offset option. Can be a
+ *                                                  boolean or "AUTO".
+ * @returns {Promise<number | null>}                The minimum shell ID, or
+ *                                                  null if the maximum number
+ *                                                  of retries is reached.
+ * @throws {Error}                                  If the tube outer diameter
+ *                                                  is less than or equal to 0,
+ *                                                  the pitch ratio is less than
+ *                                                  1, or the OTL clearance is
+ *                                                  less than 0.
+ * @throws {Error}                                  If the maximum number of
+ *                                                  retries is reached and the
+ *                                                  minimum shell ID could not
+ *                                                  be found.
+ */
+const findMinID = memoize(
+    (
+        minTubes: number,
+        OTLClearance: number,
+        tubeOD: number,
+        pitchRatio: number,
+        layout: TubeSheetLayout,
+        offsetOption: boolean | "AUTO" = "AUTO",
+    ): number => {
+        const MAX_RETRIES: number = 10;
+        let retries: number = 0;
 
-    let D_old: number;
-    let D_new: number;
-    let D_bestGuess: number | undefined;
-    let D_check: number;
-    let beta: number;
-    let i: number;
-    let numTubes_old: number;
-    let numTubes_new: number;
-    let numTubes_bestGuess: number | undefined;
-    let numTubes_check: number;
-    // let tubeFieldArr: TubeField
-    const max_i: number = 100;
+        let D_old: number;
+        let D_new: number;
+        let D_bestGuess: number | undefined;
+        let D_check: number;
+        const BETA = 1.1; // iteration multiplier when solution has not yet been bounded
+        let iterations: number;
+        let numTubes_old: number;
+        let numTubes_new: number;
+        let numTubes_bestGuess: number | undefined;
+        let numTubes_check: number;
+        const HEURISTIC_MAX_ITERATIONS: number = 20;
+        const BISECT_MAX_ITERATIONS: number = 100;
+        const DECIMAL_PLACES = 8;
 
-    if (tubeOD <= 0 || pitchRatio <= 1 || OTLClearance < 0) {
-        throw new Error("Invalid input");
-    }
-    // shortcircuit when target number of tubes = 1
-    if (minTubes === 1) {
-        return roundUp(tubeOD + OTLClearance, 8);
-    }
+        if (tubeOD <= 0) {
+            throw new Error("Tube outer diameter must be greater than 0");
+        }
+        if (pitchRatio < 1) {
+            throw new Error("Pitch ratio must be 1 or greater");
+        }
+        if (OTLClearance < 0) {
+            throw new Error("OTL clearance must be 0 or greater");
+        }
+        // shortcircuit when target number of tubes = 1
+        if (minTubes === 1) {
+            return roundUp(tubeOD + OTLClearance, DECIMAL_PLACES);
+        }
 
-    while (true) {
-        try {
-            if ((typeof layout === "string" ? layout.toLowerCase() : layout) !== "radial") {
-                if (offsetOption.toUpperCase() !== "AUTO") {
-                    i = 0;
-                    beta = 1.1; // iteration multiplier when solution has not yet been bounded
+        if (layout === "radial") {
+            const pitch = pitchRatio * tubeOD;
+            return pitch / Math.sin(Math.PI / minTubes) + tubeOD + OTLClearance;
+        }
+
+        while (true) {
+            try {
+                iterations = 0;
+
+                if (offsetOption === "AUTO") {
+                    const minID_offsetTrue = findMinID(
+                        minTubes,
+                        OTLClearance,
+                        tubeOD,
+                        pitchRatio,
+                        layout,
+                        true,
+                    );
+                    const minID_offsetFalse = findMinID(
+                        minTubes,
+                        OTLClearance,
+                        tubeOD,
+                        pitchRatio,
+                        layout,
+                        false,
+                    );
+
+                    if (isNaN(minID_offsetTrue)) {
+                        return minID_offsetFalse;
+                    }
+                    if (isNaN(minID_offsetFalse)) {
+                        return minID_offsetTrue;
+                    }
+                    return Math.min(minID_offsetTrue, minID_offsetFalse);
+                } else {
+                    // Track bounds for bisection fallback if heuristic fails to
+                    // converge
+                    let D_lowerBound = 0;
+                    let D_upperBound = 0;
+                    let haveLowerBound = false;
+                    let haveUpperBound = false;
+
+                    const updateBounds = (D: number, numTubes: number, targetTubes: number) => {
+                        if (numTubes < targetTubes) {
+                            if (!haveLowerBound) {
+                                D_lowerBound = D;
+                                haveLowerBound = true;
+                            } else if (D > D_lowerBound) {
+                                D_lowerBound = D;
+                            }
+                        } else {
+                            const OTL = tubeFieldOTL(
+                                D,
+                                OTLClearance,
+                                tubeOD,
+                                pitchRatio,
+                                layout,
+                                offsetOption,
+                            );
+                            if (OTL !== null && OTL !== undefined) {
+                                const D_snap = roundUp(OTL + OTLClearance, DECIMAL_PLACES);
+                                if (!haveUpperBound) {
+                                    D_upperBound = D_snap;
+                                    haveUpperBound = true;
+                                } else if (D_snap < D_upperBound) {
+                                    D_upperBound = D_snap;
+                                }
+                            }
+                        }
+                    };
 
                     // Initialise guesses depending on selected layout
+                    const packingFactor = layout === 30 || layout === 60 ? 0.84 : 0.61;
                     if (layout === 30 || layout === 60) {
-                        if (offsetOption === "True") {
+                        if (offsetOption === true) {
                             D_old = Math.max(
-                                tubeOD * pitchRatio * Math.sqrt(minTubes / 0.84) + OTLClearance,
-                                tubeOD * pitchRatio * 2 + OTLClearance + 0.1
+                                tubeOD * pitchRatio * Math.sqrt(minTubes / packingFactor) +
+                                    OTLClearance,
+                                tubeOD * pitchRatio * 2 + OTLClearance + 0.1,
                             );
                         } else {
                             D_old = Math.max(
-                                tubeOD * pitchRatio * Math.sqrt(minTubes / 0.84) + OTLClearance,
-                                tubeOD + OTLClearance + 0.1
+                                tubeOD * pitchRatio * Math.sqrt(minTubes / packingFactor) +
+                                    OTLClearance,
+                                tubeOD + OTLClearance + 0.1,
                             );
                         }
                     } else {
-                        if (offsetOption === "True") {
+                        if (offsetOption === true) {
                             D_old = Math.max(
-                                tubeOD * pitchRatio * Math.sqrt(minTubes / 0.61) + OTLClearance,
+                                tubeOD * pitchRatio * Math.sqrt(minTubes / packingFactor) +
+                                    OTLClearance,
                                 Math.sqrt(
-                                    (tubeOD * pitchRatio) ** 2 + ((tubeOD * pitchRatio) / 2) ** 2
+                                    (tubeOD * pitchRatio) ** 2 + ((tubeOD * pitchRatio) / 2) ** 2,
                                 ) *
                                     2 +
                                     OTLClearance +
-                                    0.1
+                                    0.1,
                             );
                         } else {
                             D_old = Math.max(
-                                tubeOD * pitchRatio * Math.sqrt(minTubes / 0.61) + OTLClearance,
-                                tubeOD + OTLClearance + 0.1
+                                tubeOD * pitchRatio * Math.sqrt(minTubes / packingFactor) +
+                                    OTLClearance,
+                                tubeOD + OTLClearance + 0.1,
                             );
                         }
                     }
@@ -537,10 +793,10 @@ function findMinID(
                             tubeOD,
                             pitchRatio,
                             layout,
-                            offsetOption
+                            offsetOption,
                         ) === null
                     ) {
-                        D_old = D_old * beta;
+                        D_old = D_old * BETA;
                     }
 
                     // Save first guess of tube count into memory
@@ -551,7 +807,7 @@ function findMinID(
                             tubeOD,
                             pitchRatio,
                             layout,
-                            offsetOption
+                            offsetOption,
                         )! + OTLClearance;
                     numTubes_old = tubeCount(
                         D_old,
@@ -559,11 +815,12 @@ function findMinID(
                         tubeOD,
                         pitchRatio,
                         layout,
-                        offsetOption
+                        offsetOption,
                     );
 
-                    // Increment diameter, save second guess of tube count into memory
-                    D_new = D_old * beta;
+                    // Increment diameter, save second guess of tube count into
+                    // memory
+                    D_new = D_old * BETA;
                     D_new =
                         tubeFieldOTL(
                             D_new,
@@ -571,7 +828,7 @@ function findMinID(
                             tubeOD,
                             pitchRatio,
                             layout,
-                            offsetOption
+                            offsetOption,
                         )! + OTLClearance;
                     numTubes_new = tubeCount(
                         D_new,
@@ -579,20 +836,26 @@ function findMinID(
                         tubeOD,
                         pitchRatio,
                         layout,
-                        offsetOption
+                        offsetOption,
                     );
 
-                    while (numTubes_new !== minTubes && i < max_i) {
-                        // Re-initialise guesses. if there has been a previous attempt, use that as a starting point.
+                    updateBounds(D_old, numTubes_old, minTubes);
+                    updateBounds(D_new, numTubes_new, minTubes);
+
+                    while (numTubes_new !== minTubes && iterations < HEURISTIC_MAX_ITERATIONS) {
+                        // Re-initialise guesses. if there has been a previous
+                        // attempt, use that as a starting point.
                         if (!D_bestGuess) {
                             D_old = D_new;
                         } else {
                             D_old = D_bestGuess;
                         }
 
-                        if (i > 1) {
-                            // Shortcircuit by reducing the diameter by a small amount to see whether the predicted number of tubes goes below the target.
-                            // if tube count reduces, then min ID has been found.
+                        if (iterations > 1) {
+                            // Shortcircuit by reducing the diameter by a small
+                            // amount to see whether the predicted number of
+                            // tubes goes below the target. if tube count
+                            // reduces, then min ID has been found.
                             if (numTubes_new > minTubes) {
                                 D_check = roundUp(
                                     tubeFieldOTL(
@@ -601,18 +864,24 @@ function findMinID(
                                         tubeOD,
                                         pitchRatio,
                                         layout,
-                                        offsetOption
+                                        offsetOption,
                                     )! + OTLClearance,
-                                    8
+                                    DECIMAL_PLACES,
                                 );
                                 numTubes_check = tubeCount(
-                                    D_check - 0.000001,
+                                    D_check - Math.pow(10, -DECIMAL_PLACES),
                                     OTLClearance,
                                     tubeOD,
                                     pitchRatio,
                                     layout,
-                                    offsetOption
+                                    offsetOption,
                                 );
+                                updateBounds(
+                                    D_check - Math.pow(10, -DECIMAL_PLACES),
+                                    numTubes_check,
+                                    minTubes,
+                                );
+
                                 if (numTubes_check < minTubes) {
                                     minTubes = numTubes_new;
                                     return D_check;
@@ -622,18 +891,18 @@ function findMinID(
                             }
                         }
 
-                        // if last two guesses result in tubes less than target, increment diameter guess by beta factor.
+                        // Adjust the diameter guess based on the tube count
+                        // comparisons
                         if (numTubes_new < minTubes && numTubes_old < minTubes) {
-                            D_new = D_old * beta;
-                        }
-
-                        // if the last two guesses result in tubes more than target, decrease diameter by beta factor.
-                        else if (numTubes_new > minTubes && numTubes_old > minTubes) {
-                            D_new = D_old / beta;
-
-                            // if the last two guesses are both more and less than target,
-                            // take the average of the last two guesses as the next guess.
+                            // Increment diameter guess by beta factor if both
+                            // are less
+                            D_new = D_old * BETA;
+                        } else if (numTubes_new > minTubes && numTubes_old > minTubes) {
+                            // Decrease diameter by beta factor if both are more
+                            D_new = D_old / BETA;
                         } else {
+                            // Average the last two guesses if one is more and
+                            // one is less
                             D_new = (D_new + D_old) / 2;
                         }
 
@@ -643,7 +912,7 @@ function findMinID(
                             tubeOD,
                             pitchRatio,
                             layout,
-                            offsetOption
+                            offsetOption,
                         );
                         numTubes_new = tubeCount(
                             D_new,
@@ -651,8 +920,11 @@ function findMinID(
                             tubeOD,
                             pitchRatio,
                             layout,
-                            offsetOption
+                            offsetOption,
                         );
+
+                        updateBounds(D_old, numTubes_old, minTubes);
+                        updateBounds(D_new, numTubes_new, minTubes);
 
                         if (numTubes_new > minTubes) {
                             if (!numTubes_bestGuess) {
@@ -663,278 +935,422 @@ function findMinID(
                                 D_bestGuess = D_new;
                             }
                         }
-
-                        i = i + 1;
+                        iterations++;
                     }
 
-                    if (i >= max_i) {
-                        throw new Error("Max iterations reached. Retrying with different guesses");
-                    }
-
-                    return (
-                        roundUp(
+                    if (numTubes_new === minTubes) {
+                        return roundUp(
                             tubeFieldOTL(
                                 D_new,
                                 OTLClearance,
                                 tubeOD,
                                 pitchRatio,
                                 layout,
-                                offsetOption
+                                offsetOption,
                             )! + OTLClearance,
-                            8
-                        ) + 0.0000000001
-                    );
-                } else {
-                    let numTubes_offsetTrue: number, numTubes_offsetFalse: number;
-                    numTubes_offsetTrue = findMinID(
-                        minTubes,
-                        OTLClearance,
-                        tubeOD,
-                        pitchRatio,
-                        layout,
-                        "True"
-                    );
-                    numTubes_offsetFalse = findMinID(
-                        minTubes,
-                        OTLClearance,
-                        tubeOD,
-                        pitchRatio,
-                        layout,
-                        "False"
-                    );
-
-                    if (isNaN(numTubes_offsetTrue)) {
-                        return numTubes_offsetFalse;
-                    } else if (isNaN(numTubes_offsetFalse)) {
-                        return numTubes_offsetTrue;
-                    } else if (numTubes_offsetTrue < numTubes_offsetFalse) {
-                        return numTubes_offsetTrue;
-                    } else {
-                        return numTubes_offsetFalse;
+                            DECIMAL_PLACES,
+                        );
                     }
+
+                    // Bisection fallback if heuristic fails to converge
+                    const minValidID = tubeOD + OTLClearance + Math.pow(10, -DECIMAL_PLACES);
+                    if (!haveLowerBound) {
+                        let D_shrink = haveUpperBound ? D_upperBound : D_old;
+                        while (true) {
+                            D_shrink = D_shrink / BETA;
+                            if (D_shrink <= minValidID) {
+                                D_lowerBound = minValidID;
+                                haveLowerBound = true;
+                                break;
+                            }
+                            const numTubesLower = tubeCount(
+                                D_shrink,
+                                OTLClearance,
+                                tubeOD,
+                                pitchRatio,
+                                layout,
+                                offsetOption,
+                            );
+                            if (numTubesLower < minTubes) {
+                                D_lowerBound = D_shrink;
+                                haveLowerBound = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!haveUpperBound) {
+                        let D_grow = haveLowerBound ? D_lowerBound : D_old;
+                        // Bounded, with a finiteness check: an unbounded loop
+                        // here can hang forever if D_grow ever became NaN.
+                        const GROW_MAX_ITERATIONS = 1000;
+                        let growIterations = 0;
+                        while (growIterations < GROW_MAX_ITERATIONS) {
+                            if (!Number.isFinite(D_grow) || D_grow <= 0) {
+                                throw new Error(
+                                    "findMinID: diameter guess became non-finite while searching for an upper bound.",
+                                );
+                            }
+                            D_grow = D_grow * BETA;
+                            const numTubesUpper = tubeCount(
+                                D_grow,
+                                OTLClearance,
+                                tubeOD,
+                                pitchRatio,
+                                layout,
+                                offsetOption,
+                            );
+                            if (numTubesUpper > minTubes) {
+                                D_upperBound = roundUp(
+                                    tubeFieldOTL(
+                                        D_grow,
+                                        OTLClearance,
+                                        tubeOD,
+                                        pitchRatio,
+                                        layout,
+                                        offsetOption,
+                                    )! + OTLClearance,
+                                    DECIMAL_PLACES,
+                                );
+                                haveUpperBound = true;
+                                break;
+                            }
+                            growIterations++;
+                        }
+                        if (!haveUpperBound) {
+                            throw new Error(
+                                "findMinID: unable to bound a valid diameter within the iteration limit.",
+                            );
+                        }
+                    }
+
+                    let bisectIterations = 0;
+                    while (
+                        D_upperBound - D_lowerBound > Math.pow(10, -DECIMAL_PLACES) &&
+                        bisectIterations < BISECT_MAX_ITERATIONS
+                    ) {
+                        const D_mid = (D_lowerBound + D_upperBound) / 2;
+                        const numTubesMid = tubeCount(
+                            D_mid,
+                            OTLClearance,
+                            tubeOD,
+                            pitchRatio,
+                            layout,
+                            offsetOption,
+                        );
+                        if (numTubesMid >= minTubes) {
+                            D_upperBound = roundUp(
+                                tubeFieldOTL(
+                                    D_mid,
+                                    OTLClearance,
+                                    tubeOD,
+                                    pitchRatio,
+                                    layout,
+                                    offsetOption,
+                                )! + OTLClearance,
+                                DECIMAL_PLACES,
+                            );
+                        } else {
+                            D_lowerBound = D_mid;
+                        }
+                        bisectIterations++;
+                    }
+                    return D_upperBound;
                 }
-            } else {
-                let Pt: number;
-                Pt = pitchRatio * tubeOD;
-                return Pt / Math.sin(Math.PI / minTubes) + tubeOD + OTLClearance;
-            }
-        } catch (err) {
-            if (retries < maxRetries) {
-                retries = retries + 1;
-                console.log(`Number of retries: ${retries}`);
-                minTubes = minTubes + 1;
-            } else {
-                throw new Error("Max number of retries reached. Min ID could not be found.");
+            } catch {
+                if (retries < MAX_RETRIES) {
+                    retries++;
+                    minTubes++;
+                } else {
+                    throw new Error("Max number of retries reached. Min ID could not be found.");
+                }
             }
         }
+    },
+    createMemoKey(...LAYOUT_FN_MEMO_DEFAULTS),
+);
+findMinID.cache = new LRUCache(MEMO_CACHE_SIZE) as unknown as typeof findMinID.cache;
+
+/**
+ * Extra margin around the final SVG viewBox.
+ */
+export const VIEWBOX_PADDING_AS_FRACTION = 0.1;
+
+/**
+ * SVG viewBox is padded by `VIEWBOX_PADDING_AS_FRACTION`, and the crosshair
+ * extends 10% beyond the shell circle.
+ */
+export const DRAWING_SAFE_CONTENT_RADIUS_FRACTION = 0.5 / (1 + VIEWBOX_PADDING_AS_FRACTION);
+
+/**
+ * Returns the effective shell ID for a given TubeSheetData object.
+ *
+ * @param {Pick<ITubeSheetData, "tubeField" | "OTL" | "shellID" | "minID">} ts
+ * The TubeSheetData object.
+ * @returns {number}
+ * The effective shell ID. Returns 0 if both `ts.tubeField` and `ts.OTL` are
+ * null. If `ts.shellID` is defined and non-zero, or `ts.minID` is null, 0, or
+ * NaN, returns `ts.shellID` (or 0 if `ts.shellID` is also unusable).
+ * Otherwise, returns `ts.minID`.
+ */
+export const getEffectiveShellID = (
+    ts: Pick<ITubeSheetData, "tubeField" | "OTL" | "shellID" | "minID">,
+): number => {
+    if (ts.tubeField === null && ts.OTL === null) {
+        return 0;
     }
-}
 
-function generateSVGCircles<T extends { x: number; y: number }>(
-    circles: T[],
-    diameter: number,
-    svgStyles: string,
-    id?: Boolean
-): SVGSVGElement {
-    // Set id boolean if undefined
-    if (typeof id === "undefined") {
-        id = false;
+    if (ts.shellID || ts.minID === null || ts.minID === 0 || isNaN(ts.minID)) {
+        // ts.shellID may be undefined here if minID is also unusable.
+        return ts.shellID ?? 0;
     }
-    // Create an SVG element
-    const svgNamespace = "http://www.w3.org/2000/svg";
 
-    // Create variables to define bounding box based on coordinates and diameter
-    let minX = Infinity,
-        minY = Infinity,
-        maxX = -Infinity,
-        maxY = -Infinity;
+    if (ts.shellID === undefined || ts.shellID === 0 || isNaN(ts.shellID)) {
+        return ts.minID;
+    }
 
-    const svg = document.createElementNS(svgNamespace, "svg");
+    return 0;
+};
 
-    // Loop through each tube to create circles
-    circles.forEach((c, i) => {
-        const circle = document.createElementNS(svgNamespace, "circle");
-        circle.setAttribute("cx", c.x.toString());
-        circle.setAttribute("cy", c.y.toString());
-        circle.setAttribute("r", (diameter / 2).toString());
-        if (id) {
-            circle.setAttribute("id", (i + 1).toString());
-        }
+/**
+ * Generates an SVG element containing circles based on the provided data.
+ *
+ * @param {ITubeSheetData} ts  The TubeSheetData object.
+ * @returns {SVGSVGElement}    The generated SVG element.
+ */
+export const generateTubeSheetSVG = (ts: ITubeSheetData): SVGSVGElement => {
+    /**
+     * Generates an SVG element containing circles based on the provided data.
+     *
+     * @param {T[]} circles        An array of objects representing the
+     *                             coordinates of the circles.
+     * @param {number} diameter    The diameter of the circles.
+     * @param {string} svgStyles   The styles to apply to the circles.
+     * @param {boolean} [id=false] The whether to assign an ID to each circle.
+     * @returns {SVGSVGElement}    The generated SVG element.
+     */
+    const generateSVGCircles = <T extends { x: number; y: number }>(
+        circles: T[],
+        diameter: number,
+        svgStyles: string,
+        id: boolean = false,
+    ): SVGSVGElement => {
+        // Create an SVG element
+        const svgNamespace = "http://www.w3.org/2000/svg";
 
-        // Apply the SVG path styles
-        const styles = svgStyles.split(";").reduce((acc, style) => {
-            const [key, value] = style.split(":");
-            if (key && value) acc[key.trim()] = value.trim();
-            return acc;
-        }, {} as { [key: string]: string });
+        // Create variables to define bounding box based on coordinates and
+        // diameter
+        let minX = Infinity,
+            minY = Infinity,
+            maxX = -Infinity,
+            maxY = -Infinity;
+
+        const svg = document.createElementNS(svgNamespace, "svg");
+
+        // Predefine tube style
+        const styles = svgStyles.split(";").reduce(
+            (acc, style) => {
+                const [key, value] = style.split(":");
+                if (key && value) acc[key.trim()] = value.trim();
+                return acc;
+            },
+            {} as { [key: string]: string },
+        );
+        const styleEntries = Object.entries(styles);
+        const radius = diameter / 2;
+        const radiusStr = radius.toString();
+
+        // Build circles in a detached DocumentFragment and append it once, to
+        // the final svg.
+        const fragment = document.createDocumentFragment();
+
+        // Loop through each tube to create circles
+        circles.forEach((c, i) => {
+            const circle = document.createElementNS(svgNamespace, "circle");
+            circle.setAttribute("cx", c.x.toString());
+            circle.setAttribute("cy", c.y.toString());
+            circle.setAttribute("r", radiusStr);
+            if (id) {
+                circle.setAttribute("id", (i + 1).toString());
+            }
+
+            // Apply the SVG path styles
+            for (const [key, value] of styleEntries) {
+                circle.setAttribute(key, value);
+            }
+
+            // Calculate bounding box based on coordinates and diameter
+            minX = Math.min(minX, c.x - radius);
+            minY = Math.min(minY, c.y - radius);
+            maxX = Math.max(maxX, c.x + radius);
+            maxY = Math.max(maxY, c.y + radius);
+
+            // Append each circle to the SVG fragment
+            fragment.appendChild(circle);
+        });
+
+        svg.appendChild(fragment);
+
+        const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+
+        // Set SVG attributes
+        svg.setAttribute("xmlns", svgNamespace);
+        svg.setAttribute("height", "100dvh");
+        svg.setAttribute("viewBox", viewBox);
+
+        return svg;
+    };
+
+    /**
+     * Generates an SVG element containing a centered cross.
+     *
+     * @returns {SVGSVGElement}    The generated SVG element.
+     */
+    const generateSVGCenteredCross = (diameter: number, svgStyles: string): SVGSVGElement => {
+        // Create an SVG element
+        const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+        // Create variables to define bounding box based on coordinates and diameter
+        const minX = (-diameter / 2) * 1.1,
+            minY = (-diameter / 2) * 1.1,
+            maxX = (diameter / 2) * 1.1,
+            maxY = (diameter / 2) * 1.1;
+
+        // Interpret SVG styles
+        const styles = svgStyles.split(";").reduce(
+            (acc, style) => {
+                const [key, value] = style.split(":");
+                if (key && value) acc[key.trim()] = value.trim();
+                return acc;
+            },
+            {} as { [key: string]: string },
+        );
+
+        const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+
+        // Horizontal line
+        const horzLine = document.createElementNS(SVG_NAMESPACE, "line");
+        horzLine.setAttribute("x1", minX.toString());
+        horzLine.setAttribute("y1", "0");
+        horzLine.setAttribute("x2", maxX.toString());
+        horzLine.setAttribute("y2", "0");
 
         Object.entries(styles).forEach(([key, value]) => {
-            circle.setAttribute(key, value);
+            horzLine.setAttribute(key, value);
         });
+        svg.appendChild(horzLine);
 
-        // Calculate bounding box based on coordinates and diameter
-        minX = Math.min(minX, c.x - diameter / 2);
-        minY = Math.min(minY, c.y - diameter / 2);
-        maxX = Math.max(maxX, c.x + diameter / 2);
-        maxY = Math.max(maxY, c.y + diameter / 2);
+        // Vertical line
+        const vertLine = document.createElementNS(SVG_NAMESPACE, "line");
+        vertLine.setAttribute("x1", "0");
+        vertLine.setAttribute("y1", minY.toString());
+        vertLine.setAttribute("x2", "0");
+        vertLine.setAttribute("y2", maxY.toString());
 
-        // Append each circle to the SVG
-        svg.appendChild(circle);
-    });
+        Object.entries(styles).forEach(([key, value]) => {
+            vertLine.setAttribute(key, value);
+        });
+        svg.appendChild(vertLine);
 
-    const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+        const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
 
-    // Set SVG attributes
-    svg.setAttribute("xmlns", svgNamespace);
-    svg.setAttribute("height", "100dvh");
-    svg.setAttribute("viewBox", viewBox);
+        // Set SVG attributes
+        svg.setAttribute("xmlns", SVG_NAMESPACE);
+        svg.setAttribute("height", "100dvh");
+        svg.setAttribute("viewBox", viewBox);
 
-    return svg;
-}
+        return svg;
+    };
 
-function generateSVGCenteredCross(diameter: number, svgStyles: string): SVGSVGElement {
-    // Create an SVG element
-    const svgNamespace = "http://www.w3.org/2000/svg";
+    /**
+     * Merges multiple SVG elements into a single SVG element.
+     * @param {SVGSVGElement[]} svgs The SVG elements to merge.
+     * @returns {SVGSVGElement} The merged SVG element.
+     */
+    const mergeSVGs = (svgs: SVGSVGElement[], viewBoxPaddingAsFraction: number): SVGSVGElement => {
+        const VIEWBOX_PADDING = 1 + viewBoxPaddingAsFraction;
+        const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
-    // Create variables to define bounding box based on coordinates and diameter
-    let minX = (-diameter / 2) * 1.1,
-        minY = (-diameter / 2) * 1.1,
-        maxX = (diameter / 2) * 1.1,
-        maxY = (diameter / 2) * 1.1;
+        // Create a new SVG element to serve as the container
+        const mergedSVG = document.createElementNS(SVG_NAMESPACE, "svg");
+        mergedSVG.setAttribute("xmlns", SVG_NAMESPACE);
+        mergedSVG.setAttribute("height", "100dvh");
+        mergedSVG.setAttribute("class", "tubesheet-svg");
+        mergedSVG.setAttribute("margin", "0");
+        mergedSVG.setAttribute("padding", "0");
 
-    // Interpret SVG styles
-    const styles = svgStyles.split(";").reduce((acc, style) => {
-        const [key, value] = style.split(":");
-        if (key && value) acc[key.trim()] = value.trim();
-        return acc;
-    }, {} as { [key: string]: string });
+        // Calculate the bounding box to set the viewBox of the merged SVG
+        let minX = Infinity,
+            minY = Infinity,
+            maxX = -Infinity,
+            maxY = -Infinity;
 
-    const svg = document.createElementNS(svgNamespace, "svg");
+        svgs.forEach((svg) => {
+            // Get the child circles from each SVG and append them to the merged
+            // SVG
+            Array.from(svg.childNodes).forEach((child) => {
+                if (child instanceof SVGElement) {
+                    mergedSVG.appendChild(child.cloneNode(true));
+                }
+            });
 
-    // Horizontal line
-    const horzLine = document.createElementNS(svgNamespace, "line");
-    horzLine.setAttribute("x1", minX.toString());
-    horzLine.setAttribute("y1", "0");
-    horzLine.setAttribute("x2", maxX.toString());
-    horzLine.setAttribute("y2", "0");
-
-    Object.entries(styles).forEach(([key, value]) => {
-        horzLine.setAttribute(key, value);
-    });
-    svg.appendChild(horzLine);
-
-    // Horizontal line
-    const vertLine = document.createElementNS(svgNamespace, "line");
-    vertLine.setAttribute("x1", "0");
-    vertLine.setAttribute("y1", minY.toString());
-    vertLine.setAttribute("x2", "0");
-    vertLine.setAttribute("y2", maxY.toString());
-
-    Object.entries(styles).forEach(([key, value]) => {
-        vertLine.setAttribute(key, value);
-    });
-    svg.appendChild(vertLine);
-
-    const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
-
-    // Set SVG attributes
-    svg.setAttribute("xmlns", svgNamespace);
-    svg.setAttribute("height", "100dvh");
-    svg.setAttribute("viewBox", viewBox);
-
-    return svg;
-}
-
-function mergeSVGs(svgs: SVGSVGElement[]): SVGSVGElement {
-    const svgNamespace = "http://www.w3.org/2000/svg";
-
-    // Create a new SVG element to serve as the container
-    const mergedSVG = document.createElementNS(svgNamespace, "svg");
-    mergedSVG.setAttribute("xmlns", svgNamespace);
-    mergedSVG.setAttribute("height", "100dvh");
-    mergedSVG.setAttribute("class", "tubesheet-svg");
-    mergedSVG.setAttribute("margin", "0");
-    mergedSVG.setAttribute("padding", "0");
-
-    // Calculate the bounding box to set the viewBox of the merged SVG
-    let minX = Infinity,
-        minY = Infinity,
-        maxX = -Infinity,
-        maxY = -Infinity;
-
-    svgs.forEach((svg) => {
-        // Get the child circles from each SVG and append them to the merged SVG
-        Array.from(svg.childNodes).forEach((child) => {
-            if (child instanceof SVGElement) {
-                mergedSVG.appendChild(child.cloneNode(true));
+            // Calculate the bounding box for the current SVG to adjust the
+            // viewBox
+            const viewBox = svg.getAttribute("viewBox");
+            if (viewBox) {
+                const [x, y, width, height] = viewBox.split(" ").map(Number);
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + width);
+                maxY = Math.max(maxY, y + height);
             }
         });
 
-        // Calculate the bounding box for the current SVG to adjust the viewBox
-        const viewBox = svg.getAttribute("viewBox");
-        if (viewBox) {
-            const [x, y, width, height] = viewBox.split(" ").map(Number);
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x + width);
-            maxY = Math.max(maxY, y + height);
-        }
-    });
+        // Set the viewBox of the merged SVG to encompass all contained SVGs
+        mergedSVG.setAttribute(
+            "viewBox",
+            `${minX * VIEWBOX_PADDING} ${minY * VIEWBOX_PADDING} ${(maxX - minX) * VIEWBOX_PADDING} ${
+                (maxY - minY) * VIEWBOX_PADDING
+            }`,
+        );
 
-    // Set the viewBox of the merged SVG to encompass all contained SVGs
-    mergedSVG.setAttribute(
-        "viewBox",
-        `${minX * 1.1} ${minY * 1.1} ${(maxX - minX) * 1.1} ${(maxY - minY) * 1.1}`
-    );
+        return mergedSVG;
+    };
 
-    return mergedSVG;
-}
-
-function generateTubeSheetSVG(ts: TubeSheet) {
+    const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
     if (!ts.tubeField || !ts.OTL) {
-        return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        return document.createElementNS(SVG_NAMESPACE, "svg");
     }
 
-    let shellIDForSVG = 0;
-    if (ts.tubeField !== null && ts.OTL !== null) {
-        if (typeof ts.shellID !== "undefined" && ts.shellID !== 0 && !isNaN(ts.shellID)) {
-            shellIDForSVG = ts.shellID;
-        } else if (ts.minID !== null && ts.minID !== 0) {
-            shellIDForSVG = ts.minID;
-        }
-    }
+    const shellIDForSVG = () => getEffectiveShellID(ts);
 
-    const tubeFieldSVG = generateSVGCircles(
-        ts.tubeField,
-        ts.tubeOD,
-        "stroke:black; fill:none; stroke-width:1; vector-effect:non-scaling-stroke;",
-        true
+    const TUBE_STYLE = "stroke:black; fill:none; stroke-width:1; vector-effect:non-scaling-stroke;";
+    const SHELL_STYLE =
+        "stroke:black; fill:none; stroke-width:2; vector-effect:non-scaling-stroke;";
+    const OTL_STYLE =
+        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;";
+    const CROSSHAIRS_STYLE =
+        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;";
+
+    const tubeFieldSVG = generateSVGCircles(ts.tubeField, ts.tubeOD, TUBE_STYLE, true);
+    const shellSVG = generateSVGCircles([{ x: 0, y: 0 }], shellIDForSVG(), SHELL_STYLE);
+    const OTLSVG = generateSVGCircles([{ x: 0, y: 0 }], ts.OTL, OTL_STYLE);
+    const crossHairs = generateSVGCenteredCross(shellIDForSVG(), CROSSHAIRS_STYLE);
+    const mergedSVG = mergeSVGs(
+        [shellSVG, OTLSVG, tubeFieldSVG, crossHairs],
+        VIEWBOX_PADDING_AS_FRACTION,
     );
-    const shellSVG = generateSVGCircles(
-        [{ x: 0, y: 0 }],
-        shellIDForSVG,
-        "stroke:black; fill:none; stroke-width:2; vector-effect:non-scaling-stroke;"
-    );
-    const OTLSVG = generateSVGCircles(
-        [{ x: 0, y: 0 }],
-        ts.OTL,
-        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;"
-    );
-    const crossHairs = generateSVGCenteredCross(
-        shellIDForSVG,
-        "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;"
-    );
-    const mergedSVG = mergeSVGs([shellSVG, OTLSVG, tubeFieldSVG, crossHairs]);
+
     mergedSVG.setAttribute("title", "Tubesheet Layout Drawing");
     mergedSVG.setAttribute(
         "desc",
-        `Shell ID: ${round(shellIDForSVG, 2)} mm; OTL: ${round(ts.OTL, 2)} mm; Tube OD: ${
+        `Shell ID: ${round(shellIDForSVG(), 2)} mm; OTL: ${round(ts.OTL, 2)} mm; Tube OD: ${
             ts.tubeOD
         } mm; Pitch: ${round((ts.pitchRatio - 1) * ts.tubeOD, 2)}; Pitch Ratio: ${round(
             ts.pitchRatio,
-            2
-        )}; Pitch Layout: ${ts.layout}; Number of Tubes: ${ts.numTubes};`
+            2,
+        )}; Pitch Layout: ${ts.layout}; Number of Tubes: ${ts.numTubes};`,
     );
     mergedSVG.setAttribute("role", "img");
     return mergedSVG;
-}
+};
