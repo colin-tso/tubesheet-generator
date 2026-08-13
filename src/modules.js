@@ -914,6 +914,7 @@ export const generateTubeSheetSVG = (ts) => {
     const crossHairs = generateSVGCenteredCross(shellIDForSVG(), CROSSHAIRS_STYLE);
     const mergedSVG = mergeSVGs([shellSVG, OTLSVG, tubeFieldSVG, crossHairs], VIEWBOX_PADDING_AS_FRACTION);
     mergedSVG.setAttribute("title", "Tubesheet Layout Drawing");
+    mergedSVG.setAttribute("aria-label", "Tubesheet Layout Drawing");
     mergedSVG.setAttribute("desc", `Shell ID: ${round(shellIDForSVG(), 2)} mm; OTL: ${round(ts.OTL, 2)} mm; Tube OD: ${ts.tubeOD} mm; Pitch: ${round((ts.pitchRatio - 1) * ts.tubeOD, 2)}; Pitch Ratio: ${round(ts.pitchRatio, 2)}; Pitch Layout: ${ts.layout}; Number of Tubes: ${ts.numTubes};`);
     mergedSVG.setAttribute("role", "img");
     return mergedSVG;
