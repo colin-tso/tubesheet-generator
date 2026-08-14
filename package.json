@@ -11,5 +11,6 @@
   },
   "scripts": {
     "test": "vitest run"
-  }
+  },
+  "license": "GPL-3.0-only"
 }
