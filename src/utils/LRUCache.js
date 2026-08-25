@@ -8,8 +8,9 @@
 //
 // This bounds the cache size instead of using lodash.memoize's default unbounded Map.
 export class LRUCache {
+    maxSize;
+    map = new Map();
     constructor(maxSize) {
-        this.map = new Map();
         if (!Number.isFinite(maxSize) || maxSize <= 0) {
             throw new Error("LRUCache maxSize must be a positive number");
         }
