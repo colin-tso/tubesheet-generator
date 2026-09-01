@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import {
     TubeSheet,
@@ -5,6 +6,8 @@ import {
     ULP_TEST_UTILS,
     generateTubeSheetSVG,
     getEffectiveShellID,
+    findDiscreteSweepPoints,
+    findMinID,
 } from "../src/modules";
 import type {
     ITubeSheetData,
@@ -549,6 +552,133 @@ describe("getEffectiveShellID", () => {
                 minID: null,
             }),
         ).toBe(0);
+    });
+});
+
+describe("generateTubeSheetSVG — tube labels", () => {
+    const buildData = (): ITubeSheetData => {
+        const ts = new TubeSheet(OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30, undefined, 200);
+        return {
+            tubeField: ts.tubeField,
+            OTL: ts.OTL,
+            shellID: ts.shellID,
+            minID: ts.minID,
+            tubeOD: ts.tubeOD,
+            pitchRatio: ts.pitchRatio,
+            layout: ts.layout,
+            numTubes: ts.numTubes,
+        };
+    };
+
+    it("omits <text> labels by default", () => {
+        const svg = generateTubeSheetSVG(buildData());
+        expect(svg.querySelectorAll("text").length).toBe(0);
+    });
+
+    it("draws one <text> label per tube when showTubeLabels is set, matching the tube's circle id", () => {
+        const data = buildData();
+        const svg = generateTubeSheetSVG(data, { showTubeLabels: true });
+
+        const tubeCount = (data.tubeField as TubeField).length;
+        const labels = Array.from(svg.querySelectorAll("text")).map((el) => el.textContent);
+
+        expect(labels).toHaveLength(tubeCount);
+        expect(labels).toEqual(Array.from({ length: tubeCount }, (_, i) => (i + 1).toString()));
+
+        // Every tube circle already carries this same id (see generateSVGCircles'
+        // `id` param) — the labels should reproduce it exactly, not a separate
+        // numbering scheme.
+        const circleIds = Array.from(svg.querySelectorAll("circle[id]")).map((el) =>
+            el.getAttribute("id"),
+        );
+        expect(labels).toEqual(circleIds);
+    });
+
+    it("vertically centers labels with a dy attribute rather than dominant-baseline, so PDF export (svg2pdf.js) centers them too", () => {
+        // svg2pdf.js — used for the PDF export — does not honor the CSS
+        // `dominant-baseline` property, so relying on it alone leaves labels
+        // sitting on their alphabetic baseline (visibly below tube centre) in
+        // the exported PDF even though they look centred on screen. `dy` is
+        // a plain SVG attribute svg2pdf.js does support, so it's the
+        // renderer-agnostic way to centre the labels everywhere.
+        const svg = generateTubeSheetSVG(buildData(), { showTubeLabels: true });
+        const texts = Array.from(svg.querySelectorAll("text"));
+
+        expect(texts.length).toBeGreaterThan(0);
+        for (const text of texts) {
+            expect(text.getAttribute("dy")).toBe("0.35em");
+        }
+
+        // Not required for centering anymore, and if both were present a
+        // renderer that *does* support dominant-baseline would apply both
+        // offsets and double-shift the label. (parseSVGStyleString turns
+        // each style entry into its own presentation attribute on the
+        // wrapping <g>, so this checks for the attribute directly on the
+        // <g> that actually wraps the label <text> elements.)
+        const labelsGroup = texts[0].closest("g");
+        expect(labelsGroup?.hasAttribute("dominant-baseline")).toBe(false);
+    });
+});
+
+describe("findDiscreteSweepPoints", () => {
+    it("always includes the current shell ID in the results", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        expect(points.some((p) => p.shellID === 200)).toBe(true);
+    });
+
+    it("returns results sorted ascending by shell ID", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        for (let i = 1; i < points.length; i++) {
+            expect(points[i].shellID).toBeGreaterThan(points[i - 1].shellID);
+        }
+    });
+
+    it("returns at most 5 points (current + 2 up + 2 down)", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        expect(points.length).toBeLessThanOrEqual(5);
+    });
+
+    it("adjacent points have different tube counts (each is a real transition)", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        for (let i = 1; i < points.length; i++) {
+            // At minimum, the shell IDs should differ by more than 1mm
+            // (real transitions are spaced apart, not consecutive shell IDs)
+            expect(points[i].shellID - points[i - 1].shellID).toBeGreaterThan(1);
+        }
+    });
+
+    it("tube counts are non-decreasing with shell ID (monotonic)", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        for (let i = 1; i < points.length; i++) {
+            expect(points[i].numTubes).toBeGreaterThanOrEqual(points[i - 1].numTubes);
+        }
+    });
+
+    it("works for the user-reported large tube OD case", () => {
+        const points = findDiscreteSweepPoints(1720, 150, 95.3, 1.25, 30);
+
+        expect(points.length).toBeGreaterThanOrEqual(1);
+        expect(points.some((p) => p.shellID === 1720)).toBe(true);
+        // Adjacent points should have different tube counts
+        for (let i = 1; i < points.length; i++) {
+            expect(points[i].shellID - points[i - 1].shellID).toBeGreaterThan(1);
+        }
+    });
+
+    it("each point has a minID that matches findMinID for its tube count", () => {
+        const points = findDiscreteSweepPoints(200, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+
+        for (const point of points) {
+            if (point.numTubes > 0) {
+                const expected = findMinID(point.numTubes, OTL_CLEARANCE, TUBE_OD, PITCH_RATIO, 30);
+                expect(point.minID).toBe(expected);
+            }
+        }
     });
 });
 

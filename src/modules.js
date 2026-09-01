@@ -868,9 +868,7 @@ const tubeFieldOTL = (shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetO
                 const resultFalse = scanQuarterField(shellID, OTLClearance, tubeOD, pitchRatio, layout, false);
                 const countTrue = resultTrue ? resultTrue.count : 0;
                 const countFalse = resultFalse ? resultFalse.count : 0;
-                return countTrue >= countFalse
-                    ? computeOTL(resultTrue)
-                    : computeOTL(resultFalse);
+                return countTrue >= countFalse ? computeOTL(resultTrue) : computeOTL(resultFalse);
             }
             return computeOTL(scanQuarterField(shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption));
         }
@@ -889,6 +887,103 @@ const tubeFieldOTL = (shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetO
     }
 };
 /**
+ * Finds the next discrete shell sizes i.e. the shell IDs where the tube count
+ * changes, stepping outward from a center point in whole-unit increments.
+ * Returns the current result plus up to 2 transitions in each direction (5
+ * points max), ordered from smallest to largest shell ID.
+ *
+ * Each direction's search stops early, and yields one fewer point than the max,
+ * if it runs past `minShellID` (downward) or 500 steps without finding a change
+ * in tube count.
+ *
+ * @param {number} centerShellID                The shell ID to search outward
+ *                                              from.
+ * @param {number} OTLClearance                 The minimum diametrical
+ *                                              clearance from the tube outer
+ *                                              diameter to the shell ID.
+ * @param {number} tubeOD                       The tube outer diameter.
+ * @param {number} pitchRatio                   The tube pitch ratio.
+ * @param {TubeSheetLayout} layout              The layout of the tube sheet.
+ * @param {OffsetOption} [offsetOption="AUTO"]  The offset option.
+ * @returns {ShellSweepPoint[]}                 Up to 5 points — the center
+ *                                              point plus any transitions found
+ *                                              in each direction — sorted by
+ *                                              ascending shell ID.
+ */
+export const findDiscreteSweepPoints = (centerShellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption = "AUTO") => {
+    const STEP = 1;
+    const minShellID = tubeOD + OTLClearance;
+    const makePoint = (shellID) => ({
+        shellID,
+        numTubes: tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true),
+        OTL: tubeFieldOTL(shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true) ??
+            null,
+        minID: shellID,
+    });
+    const current = makePoint(centerShellID);
+    if (current.numTubes > 0) {
+        try {
+            current.minID = findMinID(current.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+        }
+        catch {
+            current.minID = centerShellID;
+        }
+    }
+    const centerTubeCount = current.numTubes;
+    const findTransitionUp = (startShellID) => {
+        const startCount = tubeCount(startShellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
+        try {
+            const targetID = findMinID(startCount + 1, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+            const point = makePoint(targetID);
+            point.minID = findMinID(point.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+            return point;
+        }
+        catch {
+            return null;
+        }
+    };
+    const findTransitionDown = (startShellID, centerTubeCountLocal) => {
+        const startCount = tubeCount(startShellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
+        // Step 1: find the first shell ID where tube count drops
+        let shellID = startShellID;
+        let numTubes = startCount;
+        for (let i = 0; i < 500; i++) {
+            shellID -= STEP;
+            if (shellID < minShellID)
+                return null;
+            numTubes = tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
+            if (numTubes !== startCount)
+                break;
+        }
+        if (numTubes === startCount)
+            return null;
+        // Step 2: sanity check — walk tube count up until findMinID(N+1) >= centerShellID
+        //         short-circuit: never exceed centerTubeCount
+        while (numTubes > 0 && numTubes + 1 <= centerTubeCountLocal) {
+            try {
+                const nextMinID = findMinID(numTubes + 1, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+                if (nextMinID >= centerShellID) {
+                    const point = makePoint(shellID);
+                    point.minID = findMinID(point.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+                    return point;
+                }
+            }
+            catch {
+                break;
+            }
+            numTubes += 1;
+        }
+        const point = makePoint(shellID);
+        point.minID = findMinID(point.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
+        return point;
+    };
+    const up1 = findTransitionUp(centerShellID);
+    const up2 = up1 ? findTransitionUp(up1.shellID) : null;
+    const down1 = findTransitionDown(centerShellID, centerTubeCount);
+    const down2 = down1 ? findTransitionDown(down1.shellID, centerTubeCount) : null;
+    return [down2, down1, current, up1, up2].filter((p) => p !== null);
+};
+/**
  * Finds the minimum shell ID for a given set of parameters.
  *
  * @param {number} minTubes                         The minimum number of tubes.
@@ -900,7 +995,7 @@ const tubeFieldOTL = (shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetO
  * @param {string | TubeSheetLayout} layout         The layout type. Can be a
  *                                                  string or a TubeSheetLayout
  *                                                  object.
- * @param {OffsetOption} [offsetOption="AUTO"]  The offset option. Can be a
+ * @param {OffsetOption} [offsetOption="AUTO"]      The offset option. Can be a
  *                                                  boolean or "AUTO".
  * @returns {number}                                The minimum shell ID.
  * @throws {Error}                                  If the tube outer diameter
@@ -913,7 +1008,7 @@ const tubeFieldOTL = (shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetO
  *                                                  minimum shell ID could not
  *                                                  be found.
  */
-const findMinID = memoizeBounded((minTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption = "AUTO") => {
+export const findMinID = memoizeBounded((minTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption = "AUTO") => {
     const MAX_RETRIES = 10;
     let retries = 0;
     let D_old;
@@ -965,7 +1060,8 @@ const findMinID = memoizeBounded((minTubes, OTLClearance, tubeOD, pitchRatio, la
         // would log a spurious "Tube OD exceeds" error.
         let upperBound = lowerBound * BETA;
         let boundIterations = 0;
-        while (tubeCount(upperBound, OTLClearance, tubeOD, pitchRatio, layout, "AUTO", true) < minTubes) {
+        while (tubeCount(upperBound, OTLClearance, tubeOD, pitchRatio, layout, "AUTO", true) <
+            minTubes) {
             upperBound = upperBound * BETA;
             if (!Number.isFinite(upperBound) || upperBound <= 0) {
                 throw new Error("findMinID: diameter guess became non-finite while searching for an upper bound.");
@@ -976,7 +1072,8 @@ const findMinID = memoizeBounded((minTubes, OTLClearance, tubeOD, pitchRatio, la
         }
         while (upperBound - lowerBound > Math.pow(10, -DECIMAL_PLACES)) {
             const mid = (lowerBound + upperBound) / 2;
-            if (tubeCount(mid, OTLClearance, tubeOD, pitchRatio, layout, "AUTO", true) >= minTubes) {
+            if (tubeCount(mid, OTLClearance, tubeOD, pitchRatio, layout, "AUTO", true) >=
+                minTubes) {
                 upperBound = mid;
             }
             else {
@@ -1281,7 +1378,7 @@ const parseSVGStyleString = (svgStyles) => {
         return acc;
     }, {});
 };
-export const generateTubeSheetSVG = (ts) => {
+export const generateTubeSheetSVG = (ts, options) => {
     /**
      * Generates an SVG element containing circles based on the provided data.
      *
@@ -1346,6 +1443,65 @@ export const generateTubeSheetSVG = (ts) => {
         svg.appendChild(group);
         const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
         // Set SVG attributes
+        svg.setAttribute("xmlns", svgNamespace);
+        svg.setAttribute("height", "100dvh");
+        svg.setAttribute("viewBox", viewBox);
+        return svg;
+    };
+    /**
+     * Generates an SVG element containing one text label per tube, centred on
+     * that tube's coordinates. Each label is the tube's 1-based index in
+     * `circles` — identical to the `id` attribute generateSVGCircles assigns
+     * that same tube (see the `id` param there) — so the visible number always
+     * matches the circle's own id. Mirrors generateSVGCircles'
+     * bounding-box/merge conventions so it can be fed straight into mergeSVGs.
+     *
+     * @param {T[]} circles        Tube coordinates.
+     * @param {number} diameter    Tube diameter (used only for the bounding box).
+     * @param {string} svgStyles   The styles to apply to the labels.
+     * @returns {SVGSVGElement}    The generated SVG element.
+     */
+    const generateSVGLabels = (circles, diameter, svgStyles) => {
+        const svgNamespace = "http://www.w3.org/2000/svg";
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        const svg = document.createElementNS(svgNamespace, "svg");
+        const radius = diameter / 2;
+        const styleEntries = Object.entries(parseSVGStyleString(svgStyles));
+        const group = document.createElementNS(svgNamespace, "g");
+        for (const [key, value] of styleEntries) {
+            group.setAttribute(key, value);
+        }
+        const fragment = document.createDocumentFragment();
+        const { length } = circles;
+        for (let i = 0; i < length; i++) {
+            const c = circles[i];
+            const cx = c.x;
+            const cy = c.y;
+            const text = document.createElementNS(svgNamespace, "text");
+            text.setAttribute("x", cx.toString());
+            text.setAttribute("y", cy.toString());
+            // Vertical centering is done via `dy` rather than the
+            // `dominant-baseline: central` CSS property: browsers honor
+            // dominant-baseline fine, but svg2pdf.js (used for the PDF
+            // export) ignores it and falls back to the text's default
+            // alphabetic baseline, which visibly drops each label below the
+            // tube's centre in the exported PDF only. `dy="0.35em"` is the
+            // standard baseline-based vertical-centering offset — computed
+            // from the font's own metrics rather than a CSS property engines
+            // are free to skip — so it renders identically in the live SVG,
+            // the PNG export (canvas), and the PDF export.
+            text.setAttribute("dy", "0.35em");
+            // Matches the id generateSVGCircles assigns this same tube.
+            text.textContent = (i + 1).toString();
+            fragment.appendChild(text);
+            minX = Math.min(minX, cx - radius);
+            minY = Math.min(minY, cy - radius);
+            maxX = Math.max(maxX, cx + radius);
+            maxY = Math.max(maxY, cy + radius);
+        }
+        group.appendChild(fragment);
+        svg.appendChild(group);
+        const viewBox = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
         svg.setAttribute("xmlns", svgNamespace);
         svg.setAttribute("height", "100dvh");
         svg.setAttribute("viewBox", viewBox);
@@ -1450,11 +1606,16 @@ export const generateTubeSheetSVG = (ts) => {
     const SHELL_STYLE = "stroke:black; fill:none; stroke-width:2; vector-effect:non-scaling-stroke;";
     const OTL_STYLE = "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;";
     const CROSSHAIRS_STYLE = "stroke:black; fill:none; stroke-dasharray:8 4; stroke-width:0.5; vector-effect:non-scaling-stroke;";
+    const TUBE_LABEL_STYLE = `stroke:none; font-family:sans-serif; font-size:${(ts.tubeOD * 0.28).toFixed(4)}; text-anchor:middle; pointer-events:none;`;
     const tubeFieldSVG = generateSVGCircles(ts.tubeField, ts.tubeOD, TUBE_STYLE, true);
     const shellSVG = generateSVGCircles([{ x: 0, y: 0 }], effectiveShellID, SHELL_STYLE);
     const OTLSVG = generateSVGCircles([{ x: 0, y: 0 }], ts.OTL, OTL_STYLE);
     const crossHairs = generateSVGCenteredCross(effectiveShellID, CROSSHAIRS_STYLE);
-    const mergedSVG = mergeSVGs([shellSVG, OTLSVG, tubeFieldSVG, crossHairs], VIEWBOX_PADDING_AS_FRACTION);
+    const svgsToMerge = [shellSVG, OTLSVG, tubeFieldSVG, crossHairs];
+    if (options?.showTubeLabels) {
+        svgsToMerge.push(generateSVGLabels(ts.tubeField, ts.tubeOD, TUBE_LABEL_STYLE));
+    }
+    const mergedSVG = mergeSVGs(svgsToMerge, VIEWBOX_PADDING_AS_FRACTION);
     mergedSVG.setAttribute("title", "Tubesheet Layout Drawing");
     mergedSVG.setAttribute("aria-label", "Tubesheet Layout Drawing");
     mergedSVG.setAttribute("desc", `Shell ID: ${round(effectiveShellID, 2)} mm; OTL: ${round(ts.OTL, 2)} mm; Tube OD: ${ts.tubeOD} mm; Pitch: ${round((ts.pitchRatio - 1) * ts.tubeOD, 2)}; Pitch Ratio: ${round(ts.pitchRatio, 2)}; Pitch Layout: ${ts.layout}; Number of Tubes: ${ts.numTubes};`);
