@@ -451,8 +451,22 @@ const generateTubeField = memoizeBounded((shellID, OTLClearance, tubeOD, pitchRa
  * Only valid for non-radial layouts — callers must guard on layout !== "radial".
  * offsetOption must be a boolean (not "AUTO") — callers must resolve AUTO
  * before calling.
+ *
+ * @param {number} shellID          The shell ID.
+ * @param {number} OTLClearance     The OTL clearance.
+ * @param {number} tubeOD           The tube OD.
+ * @param {number} pitchRatio       The pitch ratio.
+ * @param {TubeSheetLayout} layout  The tube sheet layout. Must not be
+ *                                  "radial".
+ * @param {boolean} offsetOption    Whether the tube field is offset. Must be
+ *                                  resolved to a boolean by the caller (not
+ *                                  "AUTO").
+ * @returns {{ count: number; maxDistSq: number } | null}
+ *                                  The tube count and the maximum squared
+ *                                  distance from the origin, or null if an
+ *                                  error occurred.
  */
-const scanQuarterField = (shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption) => {
+const scanQuarterField = memoizeBounded((shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption) => {
     try {
         if (shellID <= 0) {
             throw new Error("Shell ID must be greater than 0");
@@ -530,7 +544,7 @@ const scanQuarterField = (shellID, OTLClearance, tubeOD, pitchRatio, layout, off
     catch {
         return null;
     }
-};
+}, createMemoKey(...LAYOUT_FN_MEMO_DEFAULTS), MEMO_CACHE_SIZE);
 /**
  * Innermost patterns ("seeds") for the radial layout. Each seed is either the
  * central tube (count 1) or a ring of exactly 2-5 tubes at the smallest radius
@@ -929,7 +943,6 @@ export const findDiscreteSweepPoints = (centerShellID, OTLClearance, tubeOD, pit
             current.minID = centerShellID;
         }
     }
-    const centerTubeCount = current.numTubes;
     const findTransitionUp = (startShellID) => {
         const startCount = tubeCount(startShellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
         try {
@@ -942,45 +955,70 @@ export const findDiscreteSweepPoints = (centerShellID, OTLClearance, tubeOD, pit
             return null;
         }
     };
-    const findTransitionDown = (startShellID, centerTubeCountLocal) => {
+    /**
+     * Finds the discrete transition point stepping down from `startShellID` —
+     * the shell ID (in whole-unit steps) closest to `startShellID` at which the
+     * tube count differs from `tubeCount(startShellID)`.
+     *
+     * Binary searches over k = 1..stepLimit for the smallest k where
+     * `tubeCount(startShellID - k) !== startCount`. Tube count is monotonic
+     * non-decreasing in shell ID, so that condition is a monotonic boolean in k
+     * (false, false, ..., true, true), which makes it searchable in O(log 500)
+     * `tubeCount` calls instead of a linear scan.
+     *
+     * @param {number} startShellID       The shell ID to search downward from.
+     * @returns {ShellSweepPoint | null}  The transition point closest to
+     *                                    `startShellID`, or null if none is
+     *                                    found within 500 whole-unit steps or
+     *                                    before `minShellID` is reached.
+     */
+    const findTransitionDown = (startShellID) => {
         const startCount = tubeCount(startShellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
-        // Step 1: find the first shell ID where tube count drops
-        let shellID = startShellID;
-        let numTubes = startCount;
+        // How many whole-unit steps down from startShellID are actually available
+        // before hitting minShellID (same bound the old linear walk enforced),
+        // capped at 500. This is pure arithmetic — no tubeCount calls — so it's
+        // cheap even though it mirrors the original step-by-step subtraction
+        // exactly (avoiding any float-drift difference from computing
+        // startShellID - k directly).
+        let stepLimit = 0;
+        let probe = startShellID;
         for (let i = 0; i < 500; i++) {
-            shellID -= STEP;
-            if (shellID < minShellID)
-                return null;
-            numTubes = tubeCount(shellID, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
-            if (numTubes !== startCount)
+            probe -= STEP;
+            if (probe < minShellID)
                 break;
+            stepLimit = i + 1;
         }
-        if (numTubes === startCount)
+        if (stepLimit === 0)
             return null;
-        // Step 2: sanity check — walk tube count up until findMinID(N+1) >= centerShellID
-        //         short-circuit: never exceed centerTubeCount
-        while (numTubes > 0 && numTubes + 1 <= centerTubeCountLocal) {
-            try {
-                const nextMinID = findMinID(numTubes + 1, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
-                if (nextMinID >= centerShellID) {
-                    const point = makePoint(shellID);
-                    point.minID = findMinID(point.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
-                    return point;
-                }
+        // Tube count is monotonic non-decreasing in shell ID, so stepping down
+        // from startShellID it can only stay the same or fall — i.e. whether
+        // tubeCount(startShellID - k) !== startCount is a monotonic boolean in
+        // k. That makes the search for the first (smallest) k where it changes
+        // a binary search instead of the previous linear walk of up to 500
+        // tubeCount calls (each an unmemoized quarter-field scan).
+        const countAtK = (k) => tubeCount(startShellID - k, OTLClearance, tubeOD, pitchRatio, layout, offsetOption, true);
+        if (countAtK(stepLimit) === startCount)
+            return null; // no transition within range
+        let lo = 1;
+        let hi = stepLimit;
+        while (lo < hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            if (countAtK(mid) !== startCount) {
+                hi = mid;
             }
-            catch {
-                break;
+            else {
+                lo = mid + 1;
             }
-            numTubes += 1;
         }
+        const shellID = startShellID - lo;
         const point = makePoint(shellID);
         point.minID = findMinID(point.numTubes, OTLClearance, tubeOD, pitchRatio, layout, offsetOption);
         return point;
     };
     const up1 = findTransitionUp(centerShellID);
     const up2 = up1 ? findTransitionUp(up1.shellID) : null;
-    const down1 = findTransitionDown(centerShellID, centerTubeCount);
-    const down2 = down1 ? findTransitionDown(down1.shellID, centerTubeCount) : null;
+    const down1 = findTransitionDown(centerShellID);
+    const down2 = down1 ? findTransitionDown(down1.shellID) : null;
     return [down2, down1, current, up1, up2].filter((p) => p !== null);
 };
 /**
